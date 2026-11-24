@@ -383,6 +383,15 @@ function calcCommission(sales,mk=monthKey()){
 }
 function commThreshold(mk=monthKey()){const t=getTiers(mk);return t.length?t[0].min:Infinity}
 function calcSalary(emp,hrs){return(emp.hourRate/26)*hrs}
+// Value of one working day = (hourly-rate field ÷ 26) × the branch's normal shift hours.
+// Same rule the forgotten check-out penalty uses (rate 1200 → 1200÷26×8 = 369.23 ج.م).
+function dayValue(emp,b=state.branch){return Math.round(((+emp?.hourRate||0)/26)*branchCfg(b).shift*100)/100}
+const DAY_TIERS=[[0.5,'½ يوم'],[1,'يوم'],[2,'يومان'],[3,'3 أيام']];
+function daysText(d){const t=DAY_TIERS.find(x=>x[0]===+d);return t?t[1]:`${fmtNum(d,1)} يوم`}
+// "السبب (يومان × 369.23)" for entries added by days; the amount itself was fixed when the entry was added
+function bpLabel(x){return esc(x.name)+(x.days?` <span style="color:var(--text3)">(${daysText(x.days)} × ${fmtNum(x.dayValue,2)} ج.م)</span>`:'')}
+const PENALTY_REASONS=['غياب بدون إذن','إجازة بدون طلب مسبق (أقل من يومين)','تأخير متكرر','مخالفة تعليمات العمل'];
+const BONUS_REASONS=['يوم عمل إضافي','تغطية وردية زميل','أداء متميز'];
 function kpiColor(s){if(s>=90)return'#10b981';if(s>=80)return'#3b82f6';if(s>=70)return'#f59e0b';if(s>=60)return'#f97316';return'#ef4444'}
 function kpiLabel(s){if(s>=90)return'متميز';if(s>=80)return'مرتفع';if(s>=70)return'جيد';if(s>=60)return'مقبول';return'يحتاج تحسين'}
 function fmtNum(n,dec=0){return Number(n||0).toLocaleString('ar-EG',{minimumFractionDigits:dec,maximumFractionDigits:dec})}
@@ -1125,11 +1134,11 @@ function renderBonuses(){
   return`<div class="grid-2">
     <div class="card"><div class="section-header"><h3>🎁 المكافآت <span class="badge badge-green" style="margin-right:6px">+${fmtNum(totalB)} ج.م</span></h3><button class="btn btn-success btn-sm" id="add-bonus-btn">+ إضافة</button></div>
       ${b.length===0?'<p style="color:var(--text3);font-size:13px">لا توجد مكافآت هذا الشهر</p>':''}
-      ${b.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${esc(x.name)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--success);font-weight:800">+${fmtNum(x.amount)}</span><button class="btn btn-danger btn-xs" data-del-bonus="${i}">×</button></div></div>`).join('')}
+      ${b.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${bpLabel(x)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--success);font-weight:800">+${fmtNum(x.amount)}</span><button class="btn btn-danger btn-xs" data-del-bonus="${i}">×</button></div></div>`).join('')}
     </div>
     <div class="card"><div class="section-header"><h3>⚠️ الجزاءات <span class="badge badge-red" style="margin-right:6px">-${fmtNum(totalP)} ج.م</span></h3><button class="btn btn-danger btn-sm" id="add-penalty-btn">+ إضافة</button></div>
       ${p.length===0?'<p style="color:var(--text3);font-size:13px">لا توجد جزاءات هذا الشهر</p>':''}
-      ${p.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${esc(x.name)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--danger);font-weight:800">-${fmtNum(x.amount)}</span><button class="btn btn-danger btn-xs" data-del-penalty="${i}">×</button></div></div>`).join('')}
+      ${p.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${bpLabel(x)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--danger);font-weight:800">-${fmtNum(x.amount)}</span><button class="btn btn-danger btn-xs" data-del-penalty="${i}">×</button></div></div>`).join('')}
     </div>
   </div>`;
 }
@@ -1675,7 +1684,7 @@ function printPayslip(empId){
   const bl=isStaff()?getEmpBonuses(empId,mk).list:[],pl=isStaff()?getEmpPenalties(empId,mk).list:(st.forgotPen?.amount?[{name:'عدم تسجيل انصراف',amount:st.forgotPen.amount}]:[]);
   const money=v=>fmtNum(v,2)+' ج.م';
   const css=[...document.querySelectorAll('style')].map(x=>x.outerHTML).join('');
-  const items=(bl.length||pl.length)?`<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">🧾 تفاصيل المكافآت والجزاءات</h3>${bl.map(b=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>مكافأة: ${esc(b.name)}</span><strong style="color:var(--success)">+${money(b.amount)}</strong></div>`).join('')}${pl.map(x=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>جزاء: ${esc(x.name)}</span><strong style="color:var(--danger)">-${money(x.amount)}</strong></div>`).join('')}</div>`:'';
+  const items=(bl.length||pl.length)?`<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">🧾 تفاصيل المكافآت والجزاءات</h3>${bl.map(b=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>مكافأة: ${bpLabel(b)}</span><strong style="color:var(--success)">+${money(b.amount)}</strong></div>`).join('')}${pl.map(x=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>جزاء: ${bpLabel(x)}</span><strong style="color:var(--danger)">-${money(x.amount)}</strong></div>`).join('')}</div>`:'';
   const w=window.open('','_blank');if(!w){showToast('اسمح بالنوافذ المنبثقة للطباعة','error');return}
   w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف راتب — ${esc(e.name)} — ${MONTHS_AR[state.month]} ${state.year}</title>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">${css}
@@ -1784,8 +1793,21 @@ function checkinsCardTop(){return''}
 function renderModal(){
   const m=state.modal;let content='';
   if(m.type==='add-bonus'||m.type==='add-penalty'){
-    const isB=m.type==='add-bonus';
-    content=`<div class="modal-header"><h3>${isB?'🎁 إضافة مكافأة':'⚠️ إضافة جزاء'}</h3><button class="modal-close" id="modal-cancel">✕</button></div><div class="form-group"><label>الموظف</label><select id="modal-emp">${employees.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}</select></div><div class="form-group"><label>السبب / الوصف</label><input id="modal-name" type="text"></div><div class="form-group"><label>المبلغ (ج.م)</label><input id="modal-amount" type="number"></div><div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="modal-visible" checked style="width:auto;margin:0">مرئية للموظف</label></div><div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">💾 حفظ</button></div>`;
+    const isB=m.type==='add-bonus',reasons=isB?BONUS_REASONS:PENALTY_REASONS;
+    content=`<div class="modal-header"><h3>${isB?'🎁 إضافة مكافأة':'⚠️ إضافة جزاء'}</h3><button class="modal-close" id="modal-cancel">✕</button></div>
+      <div class="form-group"><label>الموظف</label><select id="modal-emp">${employees.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}</select></div>
+      <div class="form-group"><label>السبب</label><select id="modal-reason">${reasons.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}<option value="">أخرى (اكتب السبب)…</option></select>
+        <input id="modal-name" type="text" placeholder="اكتب السبب" style="margin-top:6px;display:none"></div>
+      <div class="form-group"><label>الحساب</label><div style="display:flex;gap:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:700;color:var(--text)"><input type="radio" name="bp-mode" value="days" checked style="width:auto;margin:0"> بالأيام</label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:700;color:var(--text)"><input type="radio" name="bp-mode" value="amount" style="width:auto;margin:0"> بالمبلغ (ج.م)</label></div></div>
+      <div id="bp-days-box" class="form-group"><label>عدد الأيام</label><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        ${DAY_TIERS.map(([d,l],k)=>`<button type="button" class="btn ${k===0?'btn-primary':'btn-ghost'} btn-sm bp-tier" data-days="${d}">${l}</button>`).join('')}
+        <input id="bp-days-custom" type="number" min="0.5" max="30" step="0.5" placeholder="عدد آخر" style="width:100px"></div>
+        <div id="bp-calc" style="margin-top:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;font-size:13px;font-weight:700"></div></div>
+      <div id="bp-amount-box" class="form-group" style="display:none"><label>المبلغ (ج.م)</label><input id="modal-amount" type="number"></div>
+      <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="modal-visible" checked style="width:auto;margin:0">مرئية للموظف</label></div>
+      <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">💾 حفظ</button></div>`;
   } else if(m.type==='add-mission'){
     _pendingImg=null;
     const ca=state.user.role==='owner'?employees:(SENIOR_ASSIGNS[state.user.empId]||employees.map(e=>e.id)).map(id=>employees.find(e=>e.id===id)).filter(Boolean);
@@ -2158,10 +2180,29 @@ function bindEvents(){
   const mm=state.modal;
   if(mm){
     if(mm.type==='add-bonus'||mm.type==='add-penalty'){
-      document.getElementById('modal-save')?.addEventListener('click',()=>{
-        const mk=monthKey(),obj={empId:document.getElementById('modal-emp').value,name:document.getElementById('modal-name').value,amount:+document.getElementById('modal-amount').value,visible:document.getElementById('modal-visible').checked};
+      const $=id=>document.getElementById(id);let days=0.5;
+      const emp=()=>employees.find(e=>e.id===$('modal-emp').value);
+      const mode=()=>document.querySelector('input[name="bp-mode"]:checked')?.value||'days';
+      const calc=()=>{const e=emp(),dv=dayValue(e),el=$('bp-calc');if(!el)return;
+        el.innerHTML=dv>0?`قيمة اليوم لـ ${esc(e.name)}: ${fmtNum(dv,2)} ج.م (سعر الساعة ${fmtNum(e.hourRate)} ÷ 26 × ${branchCfg().shift} ساعات)<br>${daysText(days)} = <span style="color:${mm.type==='add-bonus'?'var(--success)':'var(--danger)'}">${fmtNum(Math.round(days*dv*100)/100,2)} ج.م</span>`
+          :`<span style="color:var(--danger)">لا يوجد «سعر الساعة» لهذا الموظف — أضفه من إدارة الموظفين أو استخدم «بالمبلغ».</span>`};
+      document.querySelectorAll('.bp-tier').forEach(b=>b.onclick=()=>{days=+b.dataset.days;$('bp-days-custom').value='';document.querySelectorAll('.bp-tier').forEach(x=>x.className='btn btn-ghost btn-sm bp-tier');b.className='btn btn-primary btn-sm bp-tier';calc()});
+      $('bp-days-custom').oninput=e=>{const d=+e.target.value;if(d>0){days=d;document.querySelectorAll('.bp-tier').forEach(x=>x.className='btn btn-ghost btn-sm bp-tier')}calc()};
+      document.querySelectorAll('input[name="bp-mode"]').forEach(r=>r.onchange=()=>{$('bp-days-box').style.display=mode()==='days'?'':'none';$('bp-amount-box').style.display=mode()==='amount'?'':'none'});
+      $('modal-reason').onchange=()=>{$('modal-name').style.display=$('modal-reason').value?'none':''};
+      $('modal-emp').onchange=calc;calc();
+      $('modal-save')?.addEventListener('click',()=>{
+        const mk=monthKey(),name=($('modal-reason').value||$('modal-name').value).trim(),e=emp();
+        if(!name){showToast('اكتب السبب','error');return}
+        const obj={empId:e.id,name,visible:$('modal-visible').checked};
+        if(mode()==='days'){
+          const dv=dayValue(e);if(!(dv>0)){showToast('لا يوجد «سعر الساعة» لهذا الموظف','error');return}
+          if(!(days>0&&days<=30)){showToast('عدد الأيام غير صحيح','error');return}
+          // the amount is fixed now, so a later raise does not change this month's payslip
+          Object.assign(obj,{days,dayValue:dv,amount:Math.round(days*dv*100)/100});
+        }else{obj.amount=+$('modal-amount').value;if(!(obj.amount>0)){showToast('اكتب المبلغ','error');return}}
         if(mm.type==='add-bonus'){if(!bonuses[mk])bonuses[mk]=[];bonuses[mk].push(obj)}else{if(!penalties[mk])penalties[mk]=[];penalties[mk].push(obj)}
-        saveAll();state.modal=null;render();showToast('تم الحفظ ✓');
+        saveAll();state.modal=null;render();showToast(`تم الحفظ ✓ — ${fmtNum(obj.amount,2)} ج.م`);
       });
     } else if(mm.type==='add-mission'){
       document.getElementById('modal-save')?.addEventListener('click',()=>{
