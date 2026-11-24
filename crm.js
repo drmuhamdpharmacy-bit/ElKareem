@@ -142,7 +142,7 @@ const CRM = (() => {
     const g = {group: 'متابعة العملاء', items};
     const at = groups.findIndex(x => x.group === 'حسابي');
     if (state.user.role === 'employee') return [g, ...groups];
-    groups.splice(at < 0 ? groups.length : at, 0, g);
+    groups.splice(at < 0 ? groups.length : at + (at === 0 ? 1 : 0), 0, g);   // supervisors have «حسابي» first
     return groups;
   }
   const label = page => PAGES[page]?.label || '';
