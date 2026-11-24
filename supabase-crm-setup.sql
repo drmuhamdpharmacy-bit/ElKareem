@@ -5,11 +5,14 @@
 --  exists (employees, attendance, payroll, …) is changed.
 --
 --  Who can do what (row level security, uses the existing "profiles" table):
---    owner / senior / employee : read customers, add customers, care plans,
---                                follow-ups and calls (employees work in the CRM)
---    owner / senior            : VIP flag, archive, delete follow-ups/calls, protocols
---    owner                     : delete customers, merge duplicates, import
---    kiosk and anonymous       : nothing
+--    employee        : works ONLY through the crm_* functions below (search, open a customer,
+--                      add/edit a customer, care plans, record results, calls). No direct table
+--                      access: the customer list cannot be copied out in bulk, and who-did-what /
+--                      when is always stamped by the database (follow-up KPI cannot be faked).
+--    owner / senior  : also read the tables directly (export, dashboard), VIP flag, archive,
+--                      delete follow-ups/calls, protocols
+--    owner           : delete customers, merge duplicates, import
+--    kiosk, anonymous: nothing
 -- ════════════════════════════════════════════════════════════════════
 
 -- ---------------------------------------------------------------- helpers
@@ -243,14 +246,14 @@ alter table crm_audit     enable row level security;
 do $$
 declare t text;
 begin
-  -- read + add + edit for every pharmacy user (not kiosk)
+  -- direct read / add / edit: owner and supervisors only (employees use the crm_* functions)
   foreach t in array array['crm_customers','crm_medical','crm_plans','crm_followups','crm_contacts'] loop
     execute format('drop policy if exists crm_read on %I', t);
-    execute format('create policy crm_read on %I for select to authenticated using (crm_is_user())', t);
+    execute format('create policy crm_read on %I for select to authenticated using (crm_is_staff())', t);
     execute format('drop policy if exists crm_add on %I', t);
-    execute format('create policy crm_add on %I for insert to authenticated with check (crm_is_user())', t);
+    execute format('create policy crm_add on %I for insert to authenticated with check (crm_is_staff())', t);
     execute format('drop policy if exists crm_edit on %I', t);
-    execute format('create policy crm_edit on %I for update to authenticated using (crm_is_user()) with check (crm_is_user())', t);
+    execute format('create policy crm_edit on %I for update to authenticated using (crm_is_staff()) with check (crm_is_staff())', t);
   end loop;
   -- delete: owner for customers, owner/senior for the rest
   execute 'drop policy if exists crm_del on crm_customers';
@@ -308,12 +311,13 @@ create or replace function crm_create_plan(
   p_customer bigint, p_care_type text, p_title text, p_product text default null, p_protocol bigint default null,
   p_start date default null, p_refill_days int default null, p_branch text default null,
   p_assigned text default null, p_notes text default null, p_days int[] default null)
-returns bigint language plpgsql as $$
+returns bigint language plpgsql security definer set search_path = public as $$
 declare pr crm_protocols; pid bigint; d int; n int := 0; start date := coalesce(p_start, crm_today());
         refill int; days int[]; br text := coalesce(p_branch, crm_me_branch());
         who text := coalesce(p_assigned, crm_me_emp());
 begin
   if not crm_is_user() then raise exception 'not_allowed'; end if;
+  if not exists (select 1 from crm_customers where id = p_customer and merged_into is null and not archived) then raise exception 'not_found'; end if;
   if p_protocol is not null then select * into pr from crm_protocols where id = p_protocol; end if;
   refill := coalesce(p_refill_days, pr.refill_days, case when p_care_type = 'chronic' then 30 end);
   insert into crm_plans(customer_id, branch, care_type, protocol_id, title, product, start_date, refill_days,
@@ -342,7 +346,7 @@ end $$;
 create or replace function crm_record_result(
   p_followup bigint, p_status text, p_outcome text default null, p_notes text default null,
   p_channel text default 'اتصال', p_next date default null)
-returns bigint language plpgsql as $$
+returns bigint language plpgsql security definer set search_path = public as $$
 declare f crm_followups; p crm_plans; nid bigint; stamp text;
 begin
   if not crm_is_user() then raise exception 'not_allowed'; end if;
@@ -391,10 +395,11 @@ begin
 end $$;
 
 create or replace function crm_reschedule(p_followup bigint, p_date date, p_reason text default null)
-returns void language plpgsql as $$
+returns void language plpgsql security definer set search_path = public as $$
 begin
   if not crm_is_user() then raise exception 'not_allowed'; end if;
   if p_date < crm_today() then raise exception 'date_in_past'; end if;
+  if not exists (select 1 from crm_followups where id = p_followup and status in ('open','postponed')) then raise exception 'not_found'; end if;
   update crm_followups set due_date = p_date, status = 'postponed',
          notes = coalesce(notes || E'\n', '') || '[' || to_char(now() at time zone 'Africa/Cairo', 'DD/MM') || '] تأجيل إلى '
                  || to_char(p_date, 'DD/MM/YYYY') || coalesce(' — ' || nullif(trim(p_reason), ''), '')
@@ -404,10 +409,11 @@ end $$;
 -- single follow-up not tied to a plan (e.g. "call back on Sunday")
 create or replace function crm_add_followup(p_customer bigint, p_date date, p_notes text default null,
                                             p_branch text default null, p_assigned text default null)
-returns bigint language plpgsql as $$
+returns bigint language plpgsql security definer set search_path = public as $$
 declare fid bigint;
 begin
   if not crm_is_user() then raise exception 'not_allowed'; end if;
+  if not exists (select 1 from crm_customers where id = p_customer and merged_into is null) then raise exception 'not_found'; end if;
   insert into crm_followups(customer_id, branch, due_date, notes, assigned_emp)
   values (p_customer, coalesce(p_branch, crm_me_branch()), p_date, nullif(trim(p_notes), ''), coalesce(p_assigned, crm_me_emp()))
   returning id into fid;
@@ -417,7 +423,7 @@ end $$;
 -- ---------------------------------------------------------------- lists (one call per screen)
 create or replace function crm_customer_list(p_q text default '', p_branch text default null,
                                              p_filter text default null, p_limit int default 300)
-returns jsonb language sql stable as $$
+returns jsonb language sql stable security definer set search_path = public as $$
   with base as (
     select c.*,
       (select count(*) from crm_followups f where f.customer_id = c.id and f.status in ('open','postponed')) as open_fu,
@@ -428,7 +434,12 @@ returns jsonb language sql stable as $$
     from crm_customers c
     where c.merged_into is null
       and (case when p_filter = 'archived' then c.archived else not c.archived end)
+      and (coalesce(p_filter, '') <> 'archived' or crm_is_staff())
       and (p_branch is null or p_branch = any(c.branches))
+      -- employees: without a search word only their branch's customers who have follow-ups open
+      and (crm_is_staff() or coalesce(trim(p_q), '') <> ''
+           or (crm_me_branch() = any(c.branches)
+               and exists (select 1 from crm_followups f where f.customer_id = c.id and f.status in ('open','postponed'))))
       and (coalesce(trim(p_q), '') = '' or (
             select bool_and(c.name_search like '%' || crm_norm(tok) || '%'
                             or (tok ~ '^[0-9٠-٩]+$' and (c.phone_norm like '%' || coalesce(crm_phone(tok), tok) || '%'
@@ -446,12 +457,12 @@ returns jsonb language sql stable as $$
            or (p_filter = 'no_plan' and care_types is null)
            or (p_filter in ('chronic','prescription','personal_care','other') and p_filter = any(care_types))
         order by (overdue_fu > 0) desc, next_due nulls last, name
-        limit greatest(1, least(p_limit, 2000))) b
+        limit greatest(1, least(p_limit, case when crm_is_staff() then 2000 else 30 end))) b   -- employees: max 30 per search
 $$;
 
 create or replace function crm_followup_list(p_scope text default 'now', p_branch text default null,
                                              p_emp text default null, p_q text default '', p_type text default null)
-returns jsonb language sql stable as $$
+returns jsonb language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(r order by r.sort_key, r.due_date, r.id), '[]'::jsonb) from (
     select f.id, f.plan_id, f.customer_id, f.branch, f.due_date, f.stage, f.kind, f.status, f.outcome, f.notes,
            f.assigned_emp, f.done_by_name, f.done_at,
@@ -465,7 +476,8 @@ returns jsonb language sql stable as $$
       left join crm_plans p on p.id = f.plan_id
       left join crm_protocols pr on pr.id = p.protocol_id
      where crm_is_user() and c.merged_into is null and not c.archived
-       and (p_branch is null or f.branch = p_branch)
+       and case when crm_is_staff() then (p_branch is null or f.branch = p_branch)
+                else f.branch is not distinct from crm_me_branch() end          -- employees: own branch only
        and (p_emp is null or f.assigned_emp = p_emp)
        and (p_type is null or p.care_type = p_type)
        and (coalesce(trim(p_q), '') = '' or c.name_search like '%' || crm_norm(p_q) || '%'
@@ -480,7 +492,7 @@ returns jsonb language sql stable as $$
      limit 1000) r
 $$;
 
-create or replace function crm_customer_detail(p_id bigint) returns jsonb language sql stable as $$
+create or replace function crm_customer_detail(p_id bigint) returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'customer', (select to_jsonb(c) - 'name_search' from crm_customers c where c.id = p_id),
     'medical',  (select to_jsonb(m) from crm_medical m where m.customer_id = p_id),
@@ -504,7 +516,7 @@ $$;
 
 -- possible duplicates when adding a customer (same real phone or same normalized name)
 create or replace function crm_find_similar(p_name text, p_phone text, p_exclude bigint default null)
-returns jsonb language sql stable as $$
+returns jsonb language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(jsonb_build_object('id', id, 'name', name, 'phone', phone, 'erp_id', erp_id,
            'reason', case when phone_norm = crm_phone(p_phone) then 'نفس رقم الهاتف' else 'نفس الاسم' end)), '[]')
   from crm_customers
@@ -516,7 +528,7 @@ returns jsonb language sql stable as $$
 $$;
 
 -- ---------------------------------------------------------------- dashboard & KPI
-create or replace function crm_dashboard(p_branch text default null) returns jsonb language sql stable as $$
+create or replace function crm_dashboard(p_branch text default null) returns jsonb language sql stable security definer set search_path = public as $$
   with f as (select f.* from crm_followups f join crm_customers c on c.id = f.customer_id
              where crm_is_user() and not c.archived and c.merged_into is null and (p_branch is null or f.branch = p_branch)),
        c as (select * from crm_customers where crm_is_user() and not archived and merged_into is null
@@ -651,6 +663,70 @@ language sql stable security definer set search_path = public as $$
   select coalesce((select jsonb_agg(jsonb_build_object('id', b->>'id', 'name', b->>'name'))
                      from app_store s, jsonb_array_elements(s.data) b where s.id = 'branches' and crm_is_user()), '[]'::jsonb)
 $$;
+
+-- ---------------------------------------------------------------- actions for every pharmacy user
+-- add (p_id null) or edit a customer; VIP / archive / merge are not possible here (guard trigger)
+create or replace function crm_save_customer(p_id bigint, p_data jsonb) returns bigint
+language plpgsql security definer set search_path = public as $$
+declare cid bigint; brs text[] := coalesce((select array_agg(x) from jsonb_array_elements_text(p_data->'branches') x), '{}');
+begin
+  if not crm_is_user() then raise exception 'not_allowed'; end if;
+  if p_id is null then
+    insert into crm_customers(name, phone, whatsapp, erp_id, gender, birth_date, area, address, notes, branches, primary_branch, vip_note)
+    values (trim(p_data->>'name'), nullif(trim(p_data->>'phone'), ''), nullif(trim(p_data->>'whatsapp'), ''),
+            nullif(trim(p_data->>'erp_id'), ''), nullif(p_data->>'gender', ''), nullif(p_data->>'birth_date', '')::date,
+            nullif(trim(p_data->>'area'), ''), nullif(trim(p_data->>'address'), ''), nullif(trim(p_data->>'notes'), ''),
+            brs, nullif(p_data->>'primary_branch', ''), case when crm_is_staff() then nullif(trim(p_data->>'vip_note'), '') end)
+    returning id into cid;
+  else
+    update crm_customers set name = trim(p_data->>'name'), phone = nullif(trim(p_data->>'phone'), ''),
+           whatsapp = nullif(trim(p_data->>'whatsapp'), ''), erp_id = nullif(trim(p_data->>'erp_id'), ''),
+           gender = nullif(p_data->>'gender', ''), birth_date = nullif(p_data->>'birth_date', '')::date,
+           area = nullif(trim(p_data->>'area'), ''), address = nullif(trim(p_data->>'address'), ''),
+           notes = nullif(trim(p_data->>'notes'), ''), branches = brs, primary_branch = nullif(p_data->>'primary_branch', ''),
+           vip_note = case when crm_is_staff() then nullif(trim(p_data->>'vip_note'), '') else vip_note end
+     where id = p_id and merged_into is null
+    returning id into cid;
+    if cid is null then raise exception 'not_found'; end if;
+  end if;
+  return cid;
+end $$;
+
+create or replace function crm_save_medical(p_customer bigint, p_data jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not crm_is_user() then raise exception 'not_allowed'; end if;
+  if not exists (select 1 from crm_customers where id = p_customer and merged_into is null) then raise exception 'not_found'; end if;
+  insert into crm_medical(customer_id, drug_allergies, chronic_diseases, current_medications, treating_doctor, health_notes, updated_by, updated_at)
+  values (p_customer, nullif(trim(p_data->>'drug_allergies'), ''), nullif(trim(p_data->>'chronic_diseases'), ''),
+          nullif(trim(p_data->>'current_medications'), ''), nullif(trim(p_data->>'treating_doctor'), ''),
+          nullif(trim(p_data->>'health_notes'), ''), crm_me_name(), now())
+  on conflict (customer_id) do update set drug_allergies = excluded.drug_allergies, chronic_diseases = excluded.chronic_diseases,
+     current_medications = excluded.current_medications, treating_doctor = excluded.treating_doctor,
+     health_notes = excluded.health_notes, updated_by = excluded.updated_by, updated_at = excluded.updated_at;
+end $$;
+
+-- a call / visit: always recorded under the signed-in user's name (cannot be logged for someone else)
+create or replace function crm_add_contact(p_customer bigint, p_channel text, p_outcome text default null, p_notes text default null)
+returns bigint language plpgsql security definer set search_path = public as $$
+declare kid bigint;
+begin
+  if not crm_is_user() then raise exception 'not_allowed'; end if;
+  if not exists (select 1 from crm_customers where id = p_customer and merged_into is null) then raise exception 'not_found'; end if;
+  insert into crm_contacts(customer_id, branch, channel, emp_id, emp_name, outcome, notes)
+  values (p_customer, crm_me_branch(), p_channel, crm_me_emp(), crm_me_name(), nullif(trim(p_outcome), ''), nullif(trim(p_notes), ''))
+  returning id into kid;
+  return kid;
+end $$;
+
+create or replace function crm_end_plan(p_plan bigint, p_reason text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not crm_is_user() then raise exception 'not_allowed'; end if;
+  update crm_plans set status = 'ended', end_reason = coalesce(nullif(trim(p_reason), ''), 'أخرى') where id = p_plan and status <> 'ended';
+  if not found then raise exception 'not_found'; end if;
+  update crm_followups set status = 'cancelled' where plan_id = p_plan and status in ('open','postponed');
+end $$;
 
 -- customers imported without a branch: count / attach them to a branch (owner)
 create or replace function crm_unassigned_count() returns int language sql stable as $$

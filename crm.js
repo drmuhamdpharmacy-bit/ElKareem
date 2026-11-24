@@ -230,7 +230,8 @@ const CRM = (() => {
         <button class="btn btn-primary" id="crm-cust-new">+ عميل جديد</button>
       </div>
       <div class="crm-tabs">${filters.map(([k, l]) => `<button class="crm-tab${c.filter === k ? ' on' : ''}" data-crm-filter="${k}">${l}</button>`).join('')}</div>
-      ${errorCard('crm_cust') || (rows === null ? loadingHTML : !rows.length ? empty(c.q ? 'لا يوجد عميل مطابق — يمكنك إضافته كعميل جديد' : 'لا يوجد عملاء بعد') : `
+      ${!isStaffU() && !c.q ? '<div class="crm-hint" style="margin-bottom:10px">🔒 يظهر هنا عملاء فرعك الذين لديهم متابعات مفتوحة. اكتب اسم العميل أو رقمه للبحث عن أي عميل (حتى 30 نتيجة).</div>' : ''}
+      ${errorCard('crm_cust') || (rows === null ? loadingHTML : !rows.length ? empty(c.q ? 'لا يوجد عميل مطابق — يمكنك إضافته كعميل جديد' : (isStaffU() ? 'لا يوجد عملاء بعد' : 'لا توجد متابعات مفتوحة في فرعك — ابحث بالاسم أو الهاتف')) : `
       <div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table>
         <thead><tr><th>العميل</th><th>الهاتف</th><th>رقم العميل</th><th>المتابعة</th><th>المتابعة القادمة</th><th>الفروع</th><th>آخر تواصل</th></tr></thead>
         <tbody>${rows.map(r => `<tr class="crm-row" data-crm-open="${r.id}">
@@ -241,7 +242,7 @@ const CRM = (() => {
           <td style="font-size:12px">${(r.branches || []).map(b => esc(bName(b))).join(' + ') || '—'}</td>
           <td style="font-size:12px;color:var(--text2)">${r.last_contact ? fmtDT(r.last_contact) : '—'}</td></tr>`).join('')}</tbody>
       </table></div></div>
-      <div class="crm-hint" style="margin-top:8px">${rows.length >= 300 ? 'يُعرض أول 300 عميل — اكتب في البحث للتضييق' : `${rows.length} عميل`}</div>`)}`;
+      <div class="crm-hint" style="margin-top:8px">${rows.length >= (isStaffU() ? 300 : 30) ? `يُعرض أول ${isStaffU() ? 300 : 30} عميل — اكتب في البحث للتضييق` : `${rows.length} عميل`}</div>`)}`;
   }
 
   // ---------------------------------------------------------------- page: customer profile
@@ -658,18 +659,16 @@ const CRM = (() => {
         if (!m.customer) {
           const dups = await checkDuplicates();
           if (dups?.some(x => x.reason === 'نفس رقم الهاتف') && !confirm('يوجد عميل بنفس رقم الهاتف. حفظ كعميل جديد رغم ذلك؟')) return;
-          const {data, error} = await sb.from('crm_customers').insert(row).select('id').single(); if (error) return showToast(crmErr(error), 'error');
-          invalidate(); state.modal = null; open('crm_customer', {custId: data.id, tab: 'followups'}); showToast('تمت إضافة العميل ✓ — أضف له خطة متابعة');
+          let id; try { id = await rpc('crm_save_customer', {p_id: null, p_data: row}); } catch (error) { return showToast(crmErr(error), 'error'); }
+          invalidate(); state.modal = null; open('crm_customer', {custId: id, tab: 'followups'}); showToast('تمت إضافة العميل ✓ — أضف له خطة متابعة');
         } else {
-          await act(async () => { const {error} = await sb.from('crm_customers').update(row).eq('id', m.customer.id); if (error) throw error; }, 'تم الحفظ ✓');
+          await act(() => rpc('crm_save_customer', {p_id: m.customer.id, p_data: row}), 'تم الحفظ ✓');
         }
       });
     } else if (m.type === 'crm-medical') {
       save.onclick = () => busy(() => act(async () => {
-        const row = {customer_id: m.id, drug_allergies: v('crm-m-allergy') || null, chronic_diseases: v('crm-m-chronic') || null,
-          current_medications: v('crm-m-meds') || null, treating_doctor: v('crm-m-doc') || null, health_notes: v('crm-m-notes') || null,
-          updated_by: state.user.name, updated_at: new Date().toISOString()};
-        const {error} = await sb.from('crm_medical').upsert(row); if (error) throw error;
+        await rpc('crm_save_medical', {p_customer: m.id, p_data: {drug_allergies: v('crm-m-allergy'), chronic_diseases: v('crm-m-chronic'),
+          current_medications: v('crm-m-meds'), treating_doctor: v('crm-m-doc'), health_notes: v('crm-m-notes')}});
       }, 'تم حفظ الملف الطبي ✓'));
     } else if (m.type === 'crm-plan') {
       document.querySelectorAll('input[name="crm-p-type"]').forEach(r => r.onchange = () => { m.care = r.value; m.protocol = null; render(); });
@@ -705,14 +704,11 @@ const CRM = (() => {
         p_branch: state.user.branch || state.branch || null, p_assigned: v('crm-s-emp') || null}), 'تمت إضافة المتابعة ✓'));
     } else if (m.type === 'crm-contact') {
       save.onclick = () => busy(() => act(async () => {
-        const {error} = await sb.from('crm_contacts').insert({customer_id: S.custId, channel: v('crm-k-channel'), outcome: v('crm-k-outcome') || null,
-          notes: v('crm-k-notes') || null, emp_id: state.user.empId, emp_name: state.user.name, branch: state.user.branch || state.branch || null});
-        if (error) throw error;
+        await rpc('crm_add_contact', {p_customer: S.custId, p_channel: v('crm-k-channel'), p_outcome: v('crm-k-outcome') || null, p_notes: v('crm-k-notes') || null});
       }, 'تم تسجيل التواصل ✓'));
     } else if (m.type === 'crm-endplan') {
       save.onclick = () => busy(() => act(async () => {
-        const {error} = await sb.from('crm_plans').update({status: 'ended', end_reason: v('crm-e-reason')}).eq('id', m.id); if (error) throw error;
-        const r = await sb.from('crm_followups').update({status: 'cancelled'}).eq('plan_id', m.id).in('status', ['open', 'postponed']); if (r.error) throw r.error;
+        await rpc('crm_end_plan', {p_plan: m.id, p_reason: v('crm-e-reason')});
       }, 'تم إنهاء الخطة'));
     } else if (m.type === 'crm-protocol') {
       save.onclick = () => busy(() => act(async () => {
