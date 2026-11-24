@@ -388,6 +388,18 @@ function kpiLabel(s){if(s>=90)return'متميز';if(s>=80)return'مرتفع';if(
 function fmtNum(n,dec=0){return Number(n||0).toLocaleString('ar-EG',{minimumFractionDigits:dec,maximumFractionDigits:dec})}
 function monthToQuarter(m){if(m<=2)return'Q1';if(m<=5)return'Q2';if(m<=8)return'Q3';return'Q4'}
 function monthKey(){return`${state.year}-${state.month}`}
+// ══ PAY MONTH ══ Salaries run from the 26th of the previous month to the 25th, and the period is named
+// after the month it ends in (26 Oct → 25 Nov = November). Hours, lateness and forgotten check-outs follow it.
+const PAY_START_DAY=26;
+function payPeriod(y=state.year,m=state.month){
+  const iso=d=>d.toISOString().slice(0,10);
+  if(PAY_START_DAY<=1)return{from:iso(new Date(Date.UTC(y,m,1))),to:iso(new Date(Date.UTC(y,m+1,0)))};
+  return{from:iso(new Date(Date.UTC(y,m-1,PAY_START_DAY))),to:iso(new Date(Date.UTC(y,m,PAY_START_DAY-1)))};
+}
+function payMonthOf(dateStr){const[y,m,d]=String(dateStr).slice(0,10).split('-').map(Number);const dt=new Date(Date.UTC(y,m-1+(PAY_START_DAY>1&&d>=PAY_START_DAY?1:0),1));return{y:dt.getUTCFullYear(),m:dt.getUTCMonth()}}
+function payMonthKeyOf(dateStr){const p=payMonthOf(dateStr);return`${p.y}-${p.m}`}
+function payRangeLabel(y=state.year,m=state.month){const p=payPeriod(y,m),f=x=>{const[,mm,dd]=x.split('-');return`${+dd}/${+mm}`};return`${f(p.from)} – ${f(p.to)}`}
+const payRangeHTML=()=>`<span style="font-size:12px;color:var(--text3);font-weight:500"> (${payRangeLabel()})</span>`;
 // Hours: employees who check in with the QR code get their hours calculated automatically;
 // the manual number is only used for employees/months without check-ins.
 function getMonthData(mk=monthKey()){
@@ -406,9 +418,10 @@ function branchCfg(b=state.branch){
 }
 async function loadAttDays(b=state.branch,year=state.year){
   const emp=isStaff()?null:state.user.empId;
-  const{data,error}=await sb.rpc('attendance_days',{p_branch:b,p_from:new Date(Date.UTC(year,0,1)-4*3600e3).toISOString(),p_to:new Date(Date.UTC(year+1,0,1)).toISOString(),p_emp:emp});
+  const first=payPeriod(year,0).from,last=payPeriod(year,11).to,[fy,fm,fd]=first.split('-').map(Number),[ly,lm,ld]=last.split('-').map(Number);
+  const{data,error}=await sb.rpc('attendance_days',{p_branch:b,p_from:new Date(Date.UTC(fy,fm-1,fd)-4*3600e3).toISOString(),p_to:new Date(Date.UTC(ly,lm-1,ld+1)).toISOString(),p_emp:emp});
   if(error)throw error;
-  attDays[`${b}|${year}`]=(data||[]).filter(r=>+String(r.day).slice(0,4)===year);_attMemo={};
+  attDays[`${b}|${year}`]=(data||[]).filter(r=>payMonthOf(r.day).y===year);_attMemo={};
   return data;
 }
 async function ensureAtt(force){
@@ -419,7 +432,7 @@ async function ensureAtt(force){
 function attRowsFor(b,mk){
   const k=b+'|'+mk;if(k in _attMemo)return _attMemo[k];
   const[y,m]=mk.split('-').map(Number),rows=attDays[`${b}|${y}`];
-  return(_attMemo[k]=rows?rows.filter(r=>+String(r.day).slice(5,7)-1===m):null);
+  return(_attMemo[k]=rows?rows.filter(r=>payMonthKeyOf(r.day)===mk):null);
 }
 function autoAtt(empId,mk,b=state.branch,emp){
   const rows=attRowsFor(b,mk);if(!rows)return null;
@@ -1057,7 +1070,7 @@ function renderPayroll(){
     <button class="btn btn-ghost" id="print-payroll-btn">🖨️ طباعة كشف الرواتب</button>
     <button class="btn btn-ghost" id="export-payroll-btn">📊 تصدير CSV</button>
   </div>
-  <div class="card" id="payroll-table-section"><div class="section-header"><h3>📋 كشف الرواتب — ${MONTHS_AR[state.month]} ${state.year}</h3><span class="badge badge-gray">${commData.label}</span></div>
+  <div class="card" id="payroll-table-section"><div class="section-header"><h3>📋 كشف الرواتب — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()}</h3><span class="badge badge-gray">${commData.label}</span></div>
     <div class="table-wrap"><table><thead><tr><th>الموظف</th><th>الساعات</th><th>الراتب</th><th>العمولة (${commData.rate}%)</th><th>المكافآت</th><th>الجزاءات</th><th>المسحوبات</th><th>الصافي</th><th class="no-print">كشف</th></tr></thead>
     <tbody>${rows.map(r=>`<tr><td><div style="font-weight:700">${r.e.name}</div><div style="font-size:11px;color:var(--text2)">${r.e.role}</div></td><td>${fmtNum(r.hrs,2)}</td><td>${fmtNum(r.sal,2)} ج.م</td><td style="color:${r.comm>0?'var(--gold2)':'var(--text3)'}">${r.comm>0?fmtNum(r.comm,2)+' ج.م':'—'}</td><td style="color:var(--success)">${r.bt>0?'+'+fmtNum(r.bt)+' ج.م':'—'}</td><td style="color:var(--danger)">${r.pt>0?'-'+fmtNum(r.pt)+' ج.م':'—'}</td><td style="color:var(--danger)">${r.wd>0?'-'+fmtNum(r.wd,2)+' ج.م':'—'}</td><td style="font-weight:800;color:var(--gold2);font-size:15px">${fmtNum(r.net,2)} ج.م</td><td class="no-print"><button class="btn btn-ghost btn-xs" data-payslip="${esc(r.e.id)}" title="طباعة كشف الراتب">🧾</button></td></tr>`).join('')}<tr class="table-footer"><td colspan="7" style="text-align:left;padding:12px 14px">الإجمالي الكلي</td><td style="font-size:16px;font-weight:800;color:var(--gold2)">${fmtNum(grand,2)} ج.م</td><td class="no-print"></td></tr></tbody></table></div>
   </div>`;
@@ -1090,7 +1103,7 @@ function renderEmployees(){
 
 function renderAttendance(){
   const mk=monthKey();
-  return`${checkinsCard()}<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>📋 ملخص الحضور — ${MONTHS_AR[state.month]} ${state.year} <span style="font-size:11px;font-weight:500;color:var(--text3)">(الصفوف المعلّمة «تلقائي» من الكود — الباقي يدوي)</span></h3><button class="btn btn-primary" id="save-att-btn">💾 حفظ</button></div>
+  return`${checkinsCard()}<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>📋 ملخص الحضور — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()} <span style="font-size:11px;font-weight:500;color:var(--text3)">(الصفوف المعلّمة «تلقائي» من الكود — الباقي يدوي)</span></h3><button class="btn btn-primary" id="save-att-btn">💾 حفظ</button></div>
     <div style="background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--gold2)"><strong>تأثير التأخير على KPI:</strong> أقل من 15س ✅ | 15-30س 🟡 | 30-40س 🔴 | أكثر من 40س ❌</div>
     <div class="table-wrap"><table><thead><tr><th>الموظف</th><th>إجمالي الأيام</th><th>في الموعد</th><th>متأخر</th><th>تأخير (ساعات)</th><th>تأخير (دقائق)</th><th>التقييم</th></tr></thead>
     <tbody>${employees.map(e=>{const att=getAttData(e.id,mk),tlH=att.lateHours+(att.lateMinutes/60),dis=att.auto?' disabled':'';return`<tr><td style="font-weight:700">${e.name}${att.auto?' <span class="badge badge-green">تلقائي</span>':''}</td><td><input type="number" class="att-total" data-id="${e.id}"${dis} value="${att.total}" style="width:75px" min="0"></td><td><input type="number" class="att-ontime" data-id="${e.id}"${dis} value="${att.onTime}" style="width:75px" min="0"></td><td><input type="number" class="att-late" data-id="${e.id}"${dis} value="${att.late}" style="width:75px" min="0"></td><td><input type="number" class="att-late-hours" data-id="${e.id}"${dis} value="${att.lateHours}" style="width:80px" min="0"></td><td><input type="number" class="att-late-minutes" data-id="${e.id}"${dis} value="${att.lateMinutes}" style="width:80px" min="0" max="59"></td><td><span class="badge ${tlH>40?'badge-red':tlH>30?'badge-red':tlH>15?'badge-gold':'badge-green'}">${tlH>40?'❌':tlH>30?'🔴':tlH>15?'🟡':'✅'}</span></td></tr>`}).join('')}</tbody></table></div></div>
@@ -1122,7 +1135,7 @@ function renderBonuses(){
 }
 
 function renderWithdrawals(){
-  const mk=monthKey(),all=(withdrawals[mk]||[]),today=new Date(),dflt=(today.getFullYear()===state.year&&today.getMonth()===state.month)?today.toISOString().slice(0,10):`${state.year}-${String(state.month+1).padStart(2,'0')}-01`;
+  const mk=monthKey(),all=(withdrawals[mk]||[]),today=new Date(),dflt=(t=>t>=payPeriod().from&&t<=payPeriod().to?t:payPeriod().from)(cairo(today).date);
   const f=state.wdFilter||'';const list=(f?all.filter(x=>x.empId===f):all).slice().sort((a,b)=>a.date<b.date?1:-1);
   const total=all.reduce((t,x)=>t+(+x.amount||0),0);
   const per=employees.map(e=>({e,w:getEmpWithdrawals(e.id,mk)})).filter(x=>x.w.total>0).sort((a,b)=>b.w.total-a.w.total);
@@ -1275,7 +1288,7 @@ function renderMyPerfFor(empId){
   return`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px;display:flex;align-items:center;gap:14px">
     <div style="width:50px;height:50px;border-radius:50%;color:#fff;background:linear-gradient(135deg,var(--accent),var(--brand));display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800">${esc(emp.name.charAt(0))}</div>
     <div><div style="font-size:17px;font-weight:800">${esc(emp.name)}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">${esc(emp.role)} — ${esc(emp.shift)}</div></div>
-    <div style="margin-right:auto;text-align:center"><div style="font-size:11px;color:var(--text3);margin-bottom:6px">${MONTHS_AR[state.month]} ${state.year}</div><button class="btn btn-ghost btn-sm no-print" data-payslip="${esc(empId)}">🧾 طباعة كشف الراتب</button></div>
+    <div style="margin-right:auto;text-align:center"><div style="font-size:11px;color:var(--text3);margin-bottom:6px">${MONTHS_AR[state.month]} ${state.year} (${payRangeLabel()})</div><button class="btn btn-ghost btn-sm no-print" data-payslip="${esc(empId)}">🧾 طباعة كشف الراتب</button></div>
   </div>
   <div class="grid-4" style="margin-bottom:16px">
     <div class="stat-card"><div class="sc-label">الراتب الأساسي</div><div class="sc-val" style="color:var(--accent3)">${fmtNum(sal,2)}<span style="font-size:11px"> ج.م</span></div><div class="sc-sub">${fmtNum(hrs,2)} ساعة${st.auto?' · ⏱️ تلقائي':''}</div></div>
@@ -1352,7 +1365,7 @@ function cairo(d){const p={};_tzFmt.formatToParts(new Date(d)).forEach(x=>{p[x.t
 function fmtTime(d){return cairo(d).time}
 function fmtDay(dateStr){const[y,m,d]=dateStr.split('-').map(Number);const wd=new Date(Date.UTC(y,m-1,d)).getUTCDay();return`${['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'][wd]} ${d}/${m}`}
 function fmtMins(m){m=Math.round(m||0);return`${Math.floor(m/60)}س ${m%60}د`}
-function monthRangeISO(y,m){return[new Date(Date.UTC(y,m,1)-86400000).toISOString(),new Date(Date.UTC(y,m+1,1)+86400000).toISOString()]}
+function monthRangeISO(y,m){const p=payPeriod(y,m);return[new Date(new Date(p.from+'T00:00:00Z')-86400000).toISOString(),new Date(+new Date(p.to+'T00:00:00Z')+2*86400000).toISOString()]}
 function rolePages(role){return role==='owner'?OWNER_PAGES:role==='senior'?SENIOR_PAGES:role==='kiosk'?['kiosk']:EMP_PAGES}
 const _loading={};
 // Returns cached rows, or null while loading (and re-renders when ready).
@@ -1371,7 +1384,7 @@ async function loadCheckins(mine){
   q=mine?q.eq('emp_id',state.user.empId||'-'):q.eq('branch',state.branch);
   const{data,error}=await q.gte('at',s).lt('at',e).order('at');
   if(error)throw error;
-  const rows=data.filter(r=>{const c=cairo(r.at);return c.y===state.year&&c.m===state.month});
+  const rows=data.filter(r=>payMonthKeyOf(cairo(r.at).date)===monthKey());
   cache[name]={key,rows};return rows;
 }
 async function loadLeaves(){
@@ -1556,7 +1569,7 @@ function renderMyCheckin(){
   const openNow=a&&a.open?a.rows.find(r=>r.open):null;
   return`${top}
   ${openNow&&!c?`<div class="card" style="margin-bottom:16px;border:2px solid var(--brand);background:#f0fdf4;text-align:center;font-size:16px;font-weight:800;color:var(--brand)">🟢 أنت مسجل حضور الآن (منذ <span dir="ltr">${fmtTime(openNow.first_in)}</span>) — لا تنسَ مسح الكود عند الانصراف</div>`:''}
-  <div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:12px">🗓️ ساعاتي — ${MONTHS_AR[state.month]} ${state.year} <span style="font-size:11px;color:var(--text3);font-weight:500">(تُحسب تلقائياً من الحضور والانصراف)</span></h3>${summary}${list}</div>
+  <div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:12px">🗓️ ساعاتي — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()} <span style="font-size:11px;color:var(--text3);font-weight:500">(تُحسب تلقائياً من الحضور والانصراف)</span></h3>${summary}${list}</div>
   ${myFixes.length?`<div class="card" style="margin-bottom:16px"><h3 style="margin-bottom:12px">📝 طلبات تعديل الانصراف</h3>${myFixes.map(f=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;flex-wrap:wrap"><span>${fmtDay(cairo(f.in_at).date)} — حضور <span dir="ltr">${fmtTime(f.in_at)}</span> ← انصراف <span dir="ltr">${fmtTime(f.out_at)}</span></span><span>${leaveStatusBadge(f.status)}${f.status==='pending'?` <button class="btn btn-ghost btn-xs" data-fix-cancel="${f.id}">إلغاء</button>`:''}</span></div>`).join('')}</div>`:''}
   <div class="card"><h3 style="margin-bottom:12px">📍 كيف أسجل الحضور والانصراف؟</h3>
     <ol style="padding-right:20px;line-height:2;font-size:14px;color:var(--text2)">
@@ -1576,7 +1589,7 @@ function checkinsCard(){
     `<div class="table-wrap"><table><thead><tr><th>الموظف</th><th>أيام</th><th>ساعات العمل</th><th>أيام التأخير</th><th>مجموع التأخير</th><th>نسيان الانصراف</th><th>الجزاء</th><th>إلغاء الجزاء</th><th>الآن</th></tr></thead><tbody>${rows.map(({e,a})=>{const fp=forgotPenalty(e,a,cfg,isWaived(e.id,mk));return`<tr><td style="font-weight:700">${esc(e.name)}</td><td>${a.days}</td><td style="font-weight:800;color:var(--brand)">${fmtNum(a.hrs,2)}</td><td style="color:${a.late?'var(--warn)':'var(--success)'}">${a.late}</td><td>${fmtMins(a.lateMin)}</td><td style="color:${fp.extra?'var(--danger)':fp.count?'var(--warn)':'var(--text2)'}">${fp.count} / ${cfg.free_forgets}</td><td style="color:var(--danger)">${fp.extra?(fp.waived?'<s>'+fmtNum(fp.extra*fp.per,2)+'</s>':fmtNum(fp.amount,2)+' ج.م'):'—'}</td><td>${fp.extra?`<label class="toggle-switch"><input type="checkbox" class="forgot-waive" data-id="${esc(e.id)}" ${fp.waived?'checked':''}><span class="toggle-slider"></span></label>`:''}</td><td>${a.open?'<span class="badge badge-green">🟢 حاضر</span>':''}</td></tr>`}).join('')}</tbody></table></div>
     ${raw?`<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--accent);font-weight:700;font-size:13px">عرض كل التسجيلات (${raw.length})</summary>
       <div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>اليوم</th><th>الوقت</th><th>الموظف</th><th>النوع</th><th>المصدر</th><th>المسافة</th>${isOwner()?'<th></th>':''}</tr></thead><tbody>${[...raw].reverse().map(r=>`<tr><td>${fmtDay(cairo(r.at).date)}</td><td dir="ltr">${fmtTime(r.at)}</td><td>${esc(r.emp_name||r.emp_id)}</td><td>${r.kind==='in'?'🟢 حضور':'🔴 انصراف'}</td><td style="font-size:12px">${src[r.source]||'📱 كود'}${r.note?` — ${esc(r.note)}`:''}</td><td>${r.dist_m!=null?fmtNum(r.dist_m)+' م':'—'}</td>${isOwner()?`<td><button class="btn btn-danger btn-xs" data-del-checkin="${r.id}">🗑</button></td>`:''}</tr>`).join('')}</tbody></table></div></details>`:''}`;
-  return`<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>⏱️ الحضور والساعات التلقائية — ${MONTHS_AR[state.month]} ${state.year}</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" id="refresh-checkins-btn">🔄 تحديث</button><button class="btn btn-primary btn-sm" id="add-checkin-btn">➕ إضافة تسجيل يدوي</button></div></div>
+  return`<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>⏱️ الحضور والساعات التلقائية — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()}</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" id="refresh-checkins-btn">🔄 تحديث</button><button class="btn btn-primary btn-sm" id="add-checkin-btn">➕ إضافة تسجيل يدوي</button></div></div>
     <p style="color:var(--text2);font-size:12px;margin-bottom:12px">تُحسب تلقائياً من مسح الكود وتدخل مباشرة في الرواتب. الوردية العادية ${cfg.shift} ساعات · سماح التأخير ${cfg.grace} دقيقة · نسيان الانصراف: ${cfg.free_forgets} مرات مجاناً ثم جزاء ${cfg.forget_penalty} يوم عن كل مرة (تُعدّل من الإعدادات ← الفروع).</p>${body}</div>`;
 }
 async function fillAttendanceFromCheckins(){
@@ -1669,7 +1682,7 @@ function printPayslip(empId){
     .stat-card,.card{box-shadow:none!important;break-inside:avoid}.sign{display:flex;justify-content:space-between;margin-top:50px}
     .sign div{border-top:1px solid #94a3b8;padding-top:6px;width:40%;text-align:center;font-size:13px}
     @page{size:A4;margin:10mm}@media print{body{padding:0}}</style></head><body>
-  <div class="pay-head"><img src="${LOGO_B64}" style="max-height:80px"><div style="text-align:left"><div style="font-size:24px;font-weight:800">كشف راتب</div><div style="color:var(--text2)">${MONTHS_AR[state.month]} ${state.year}</div><div style="color:var(--text2)">${esc(branchName(state.branch))}</div></div></div>
+  <div class="pay-head"><img src="${LOGO_B64}" style="max-height:80px"><div style="text-align:left"><div style="font-size:24px;font-weight:800">كشف راتب</div><div style="color:var(--text2)">${MONTHS_AR[state.month]} ${state.year} (${payRangeLabel()})</div><div style="color:var(--text2)">${esc(branchName(state.branch))}</div></div></div>
   ${renderMyPerfFor(empId)}${items}
   <div class="sign"><div>توقيع الموظف</div><div>توقيع الإدارة</div></div>
   <script>window.onload=()=>setTimeout(()=>window.print(),500)<\/script></body></html>`);
@@ -2316,6 +2329,7 @@ async function bulkCreateAccounts(){
 //  STARTUP
 // ══════════════════════════════════════════════
 (async function startup(){
+  {const p=payMonthOf(cairo(Date.now()).date);state.year=p.y;state.month=p.m} // current pay month
   capturePendingCheckin();
   resetData();
   if(!window.supabase||!initSupabase()){
