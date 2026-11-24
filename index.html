@@ -389,7 +389,16 @@ function dayValue(emp,b=state.branch){return Math.round(((+emp?.hourRate||0)/26)
 const DAY_TIERS=[[0.5,'½ يوم'],[1,'يوم'],[2,'يومان'],[3,'3 أيام']];
 function daysText(d){const t=DAY_TIERS.find(x=>x[0]===+d);return t?t[1]:`${fmtNum(d,1)} يوم`}
 // "السبب (يومان × 369.23)" for entries added by days; the amount itself was fixed when the entry was added
-function bpLabel(x){return esc(x.name)+(x.days?` <span style="color:var(--text3)">(${daysText(x.days)} × ${fmtNum(x.dayValue,2)} ج.م)</span>`:'')}
+// Day-based deductions: only the OWNER sees money for them; everyone else sees the days.
+// (The net salary still includes them — anyone who sees the net salary could work the total out.)
+function bpLabel(x){return esc(x.name)+(x.days?` <span style="color:var(--text3)">(${daysText(x.days)}${isOwner()?` × ${fmtNum(x.dayValue,2)} ج.م`:''})</span>`:'')}
+function dayPen(empId,mk){let days=0,amt=0;(penalties[mk]||[]).forEach(x=>{if(x.empId===empId&&x.days){days+=+x.days;amt+=+x.amount}});return{days:Math.round(days*100)/100,amt:Math.round(amt*100)/100}}
+function penShow(pt,days,dayAmt){
+  if(isOwner()||!(days>0))return pt>0?'-'+fmtNum(pt,2)+' ج.م':'—';
+  const money=Math.round((pt-(dayAmt||0))*100)/100,parts=[];
+  if(money>0.004)parts.push('-'+fmtNum(money,2)+' ج.م');parts.push('خصم '+daysText(days));return parts.join(' + ');
+}
+function penItemAmount(x,money){return x.days&&!isOwner()?'خصم '+daysText(x.days):'-'+money(x.amount)}
 const PENALTY_REASONS=['غياب بدون إذن','إجازة بدون طلب مسبق (أقل من يومين)','تأخير متكرر','مخالفة تعليمات العمل'];
 const BONUS_REASONS=['يوم عمل إضافي','تغطية وردية زميل','أداء متميز'];
 function kpiColor(s){if(s>=90)return'#10b981';if(s>=80)return'#3b82f6';if(s>=70)return'#f59e0b';if(s>=60)return'#f97316';return'#ef4444'}
@@ -652,7 +661,7 @@ function empMonthStats(emp,mk){
   const md=getMonthData(mk),commData=calcCommission(md.sales||0,mk),hrs=(md.hours||{})[emp.id]||0,sal=calcSalary(emp,hrs);
   const comm=emp.commPct>0?commData.pool*(emp.commPct/100):0,{total:bt}=getEmpBonuses(emp.id,mk),{total:pt}=getEmpPenalties(emp.id,mk);
   const a=autoAtt(emp.id,mk),fp=forgotPenalty(emp,a,branchCfg(),isWaived(emp.id,mk)),w=getEmpWithdrawals(emp.id,mk),wd=w.total;
-  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
+  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
 }
 function buildEmpView(empId){
   const e=employees.find(x=>x.id===empId);
@@ -1068,7 +1077,7 @@ function renderMonthly(){
 function renderPayroll(){
   const md=getMonthData(),commData=calcCommission(md.sales||0),mk=monthKey();
   let grand=0;
-  const rows=employees.map(e=>{const hrs=md.hours[e.id]||0,sal=calcSalary(e,hrs),comm=e.commPct>0?commData.pool*(e.commPct/100):0,{total:bt}=getEmpBonuses(e.id,mk),{total:pt}=getEmpPenalties(e.id,mk),{total:wd}=getEmpWithdrawals(e.id,mk),net=sal+comm+bt-pt-wd;grand+=net;return{e,hrs,sal,comm,bt,pt,wd,net}});
+  const rows=employees.map(e=>{const hrs=md.hours[e.id]||0,sal=calcSalary(e,hrs),comm=e.commPct>0?commData.pool*(e.commPct/100):0,{total:bt}=getEmpBonuses(e.id,mk),{total:pt}=getEmpPenalties(e.id,mk),{total:wd}=getEmpWithdrawals(e.id,mk),net=sal+comm+bt-pt-wd,dp=dayPen(e.id,mk);grand+=net;return{e,hrs,sal,comm,bt,pt,wd,net,ptDays:dp.days,ptDayAmt:dp.amt}});
   return`<div class="grid-4" style="margin-bottom:16px">
     <div class="stat-card"><span class="sc-icon">💰</span><div class="sc-label">إجمالي الرواتب</div><div class="sc-val" style="color:var(--gold2)">${fmtNum(grand)} ج.م</div></div>
     <div class="stat-card"><span class="sc-icon">📈</span><div class="sc-label">مجمع العمولة</div><div class="sc-val" style="color:var(--success)">${fmtNum(commData.pool)} ج.م</div></div>
@@ -1081,7 +1090,7 @@ function renderPayroll(){
   </div>
   <div class="card" id="payroll-table-section"><div class="section-header"><h3>📋 كشف الرواتب — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()}</h3><span class="badge badge-gray">${commData.label}</span></div>
     <div class="table-wrap"><table><thead><tr><th>الموظف</th><th>الساعات</th><th>الراتب</th><th>العمولة (${commData.rate}%)</th><th>المكافآت</th><th>الجزاءات</th><th>المسحوبات</th><th>الصافي</th><th class="no-print">كشف</th></tr></thead>
-    <tbody>${rows.map(r=>`<tr><td><div style="font-weight:700">${r.e.name}</div><div style="font-size:11px;color:var(--text2)">${r.e.role}</div></td><td>${fmtNum(r.hrs,2)}</td><td>${fmtNum(r.sal,2)} ج.م</td><td style="color:${r.comm>0?'var(--gold2)':'var(--text3)'}">${r.comm>0?fmtNum(r.comm,2)+' ج.م':'—'}</td><td style="color:var(--success)">${r.bt>0?'+'+fmtNum(r.bt)+' ج.م':'—'}</td><td style="color:var(--danger)">${r.pt>0?'-'+fmtNum(r.pt)+' ج.م':'—'}</td><td style="color:var(--danger)">${r.wd>0?'-'+fmtNum(r.wd,2)+' ج.م':'—'}</td><td style="font-weight:800;color:var(--gold2);font-size:15px">${fmtNum(r.net,2)} ج.م</td><td class="no-print"><button class="btn btn-ghost btn-xs" data-payslip="${esc(r.e.id)}" title="طباعة كشف الراتب">🧾</button></td></tr>`).join('')}<tr class="table-footer"><td colspan="7" style="text-align:left;padding:12px 14px">الإجمالي الكلي</td><td style="font-size:16px;font-weight:800;color:var(--gold2)">${fmtNum(grand,2)} ج.م</td><td class="no-print"></td></tr></tbody></table></div>
+    <tbody>${rows.map(r=>`<tr><td><div style="font-weight:700">${r.e.name}</div><div style="font-size:11px;color:var(--text2)">${r.e.role}</div></td><td>${fmtNum(r.hrs,2)}</td><td>${fmtNum(r.sal,2)} ج.م</td><td style="color:${r.comm>0?'var(--gold2)':'var(--text3)'}">${r.comm>0?fmtNum(r.comm,2)+' ج.م':'—'}</td><td style="color:var(--success)">${r.bt>0?'+'+fmtNum(r.bt)+' ج.م':'—'}</td><td style="color:var(--danger)">${penShow(r.pt,r.ptDays,r.ptDayAmt)}</td><td style="color:var(--danger)">${r.wd>0?'-'+fmtNum(r.wd,2)+' ج.م':'—'}</td><td style="font-weight:800;color:var(--gold2);font-size:15px">${fmtNum(r.net,2)} ج.م</td><td class="no-print"><button class="btn btn-ghost btn-xs" data-payslip="${esc(r.e.id)}" title="طباعة كشف الراتب">🧾</button></td></tr>`).join('')}<tr class="table-footer"><td colspan="7" style="text-align:left;padding:12px 14px">الإجمالي الكلي</td><td style="font-size:16px;font-weight:800;color:var(--gold2)">${fmtNum(grand,2)} ج.م</td><td class="no-print"></td></tr></tbody></table></div>
   </div>`;
 }
 
@@ -1136,9 +1145,9 @@ function renderBonuses(){
       ${b.length===0?'<p style="color:var(--text3);font-size:13px">لا توجد مكافآت هذا الشهر</p>':''}
       ${b.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${bpLabel(x)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--success);font-weight:800">+${fmtNum(x.amount)}</span><button class="btn btn-danger btn-xs" data-del-bonus="${i}">×</button></div></div>`).join('')}
     </div>
-    <div class="card"><div class="section-header"><h3>⚠️ الجزاءات <span class="badge badge-red" style="margin-right:6px">-${fmtNum(totalP)} ج.م</span></h3><button class="btn btn-danger btn-sm" id="add-penalty-btn">+ إضافة</button></div>
+    <div class="card"><div class="section-header"><h3>⚠️ الجزاءات <span class="badge badge-red" style="margin-right:6px">${isOwner()?'-'+fmtNum(totalP)+' ج.م':penShow(totalP,p.reduce((t,x)=>t+(+x.days||0),0),p.reduce((t,x)=>t+(x.days?+x.amount:0),0))}</span></h3><button class="btn btn-danger btn-sm" id="add-penalty-btn">+ إضافة</button></div>
       ${p.length===0?'<p style="color:var(--text3);font-size:13px">لا توجد جزاءات هذا الشهر</p>':''}
-      ${p.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${bpLabel(x)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--danger);font-weight:800">-${fmtNum(x.amount)}</span><button class="btn btn-danger btn-xs" data-del-penalty="${i}">×</button></div></div>`).join('')}
+      ${p.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${bpLabel(x)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--danger);font-weight:800">${penItemAmount(x,v=>fmtNum(v))}</span><button class="btn btn-danger btn-xs" data-del-penalty="${i}">×</button></div></div>`).join('')}
     </div>
   </div>`;
 }
@@ -1309,7 +1318,7 @@ function renderMyPerfFor(empId){
     <div class="stat-card"><div class="sc-label">صافي الراتب</div><div class="sc-val" style="color:var(--gold2);font-size:20px">${fmtNum(net,2)}<span style="font-size:11px"> ج.م</span></div></div>
   </div>
   <div class="grid-2"><div class="card"><h3 style="margin-bottom:16px">📊 درجة KPI</h3><div style="text-align:center;padding:16px"><div style="font-size:64px;font-weight:800;color:${kpiColor(kpiScore)}">${kpiScore}</div><div style="font-size:16px;color:var(--text2);margin-top:4px">${kpiLabel(kpiScore)}</div><div class="kpi-bar" style="margin-top:16px"><div class="kpi-fill" style="width:${kpiScore}%;background:${kpiColor(kpiScore)}"></div></div></div></div>
-  <div class="card"><h3 style="margin-bottom:14px">📋 ملخص الأداء</h3>${[['الراتب الأساسي',fmtNum(sal,2)+' ج.م'],['العمولة ('+emp.commPct+'%)',fmtNum(comm,2)+' ج.م'],['مبيعاتك الشخصية',empSales>0?fmtNum(empSales)+' ج.م':'—'],['ساعات العمل'+(st.auto?' (تلقائي)':''),fmtNum(hrs,2)+' ساعة'],['أيام الحضور',(att.total||0)+' يوم'],['أيام في الموعد',att.onTime+' يوم'],['أيام متأخر',att.late+' يوم'],['إجمالي التأخير',`${att.lateHours}س ${att.lateMinutes}د`],...(st.auto?[['نسيان الانصراف',`${st.forgotPen?.count||0} مرة (المسموح ${branchCfg().free_forgets})`]]:[]),['المكافآت','+'+fmtNum(bt)+' ج.م'],['الجزاءات','-'+fmtNum(pt)+' ج.م'],['المسحوبات','-'+fmtNum(wd,2)+' ج.م'],['صافي الراتب',fmtNum(net,2)+' ج.م']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="font-weight:700">${v}</span></div>`).join('')}</div></div>
+  <div class="card"><h3 style="margin-bottom:14px">📋 ملخص الأداء</h3>${[['الراتب الأساسي',fmtNum(sal,2)+' ج.م'],['العمولة ('+emp.commPct+'%)',fmtNum(comm,2)+' ج.م'],['مبيعاتك الشخصية',empSales>0?fmtNum(empSales)+' ج.م':'—'],['ساعات العمل'+(st.auto?' (تلقائي)':''),fmtNum(hrs,2)+' ساعة'],['أيام الحضور',(att.total||0)+' يوم'],['أيام في الموعد',att.onTime+' يوم'],['أيام متأخر',att.late+' يوم'],['إجمالي التأخير',`${att.lateHours}س ${att.lateMinutes}د`],...(st.auto?[['نسيان الانصراف',`${st.forgotPen?.count||0} مرة (المسموح ${branchCfg().free_forgets})`]]:[]),['المكافآت','+'+fmtNum(bt)+' ج.م'],['الجزاءات',penShow(pt,st.ptDays,st.ptDayAmt)],['المسحوبات','-'+fmtNum(wd,2)+' ج.م'],['صافي الراتب',fmtNum(net,2)+' ج.م']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="font-weight:700">${v}</span></div>`).join('')}</div></div>
   ${wdList.length?`<div class="card" style="margin-top:16px"><div class="section-header"><h3>🛒 المسحوبات — ${MONTHS_AR[state.month]}</h3><span class="badge badge-red">-${fmtNum(wd,2)} ج.م</span></div><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>المبلغ</th><th>ملاحظة</th></tr></thead><tbody>${[...wdList].sort((x,y)=>x.date<y.date?-1:1).map(x=>`<tr><td style="white-space:nowrap">${esc(x.date)}</td><td>${esc(x.type)}</td><td style="color:var(--danger);font-weight:700">${fmtNum(x.amount,2)} ج.م</td><td style="font-size:12px;color:var(--text2)">${esc(x.note||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}`+CRM.perfCard(empId);
 }
 function renderMyMissions(){
@@ -1684,7 +1693,7 @@ function printPayslip(empId){
   const bl=isStaff()?getEmpBonuses(empId,mk).list:[],pl=isStaff()?getEmpPenalties(empId,mk).list:(st.forgotPen?.amount?[{name:'عدم تسجيل انصراف',amount:st.forgotPen.amount}]:[]);
   const money=v=>fmtNum(v,2)+' ج.م';
   const css=[...document.querySelectorAll('style')].map(x=>x.outerHTML).join('');
-  const items=(bl.length||pl.length)?`<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">🧾 تفاصيل المكافآت والجزاءات</h3>${bl.map(b=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>مكافأة: ${bpLabel(b)}</span><strong style="color:var(--success)">+${money(b.amount)}</strong></div>`).join('')}${pl.map(x=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>جزاء: ${bpLabel(x)}</span><strong style="color:var(--danger)">-${money(x.amount)}</strong></div>`).join('')}</div>`:'';
+  const items=(bl.length||pl.length)?`<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">🧾 تفاصيل المكافآت والجزاءات</h3>${bl.map(b=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>مكافأة: ${bpLabel(b)}</span><strong style="color:var(--success)">+${money(b.amount)}</strong></div>`).join('')}${pl.map(x=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span>جزاء: ${bpLabel(x)}</span><strong style="color:var(--danger)">${penItemAmount(x,money)}</strong></div>`).join('')}</div>`:'';
   const w=window.open('','_blank');if(!w){showToast('اسمح بالنوافذ المنبثقة للطباعة','error');return}
   w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف راتب — ${esc(e.name)} — ${MONTHS_AR[state.month]} ${state.year}</title>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">${css}
