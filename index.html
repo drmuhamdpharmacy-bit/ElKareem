@@ -373,7 +373,10 @@ function getTiers(mk=monthKey()){
   const t=(commissionTiers&&commissionTiers[quarterOf(mk)])||COMM_TIERS_DEF[quarterOf(mk)]||[];
   return t.filter(x=>x&&+x.min>0&&+x.rate>0).map(x=>({min:+x.min,rate:+x.rate})).sort((a,b)=>a.min-b.min);
 }
+// Commission can be switched off per branch (Settings ← شرائح العمولة); the tiers are kept.
+function commOn(){return!(commissionTiers&&commissionTiers.off)}
 function calcCommission(sales,mk=monthKey()){
+  if(!commOn())return{rate:0,pool:0,label:'العمولة متوقفة لهذا الفرع',off:true};
   const tiers=getTiers(mk);let hit=null;
   tiers.forEach(t=>{if(sales>=t.min)hit=t});
   if(!hit)return{rate:0,pool:0,label:'أقل من حد العمولة'};
@@ -681,7 +684,7 @@ function empMonthStats(emp,mk){
   const md=getMonthData(mk),commData=calcCommission(md.sales||0,mk),hrs=(md.hours||{})[emp.id]||0,sal=calcSalary(emp,hrs);
   const comm=emp.commPct>0?commData.pool*(emp.commPct/100):0,{total:bt}=getEmpBonuses(emp.id,mk),{total:pt}=getEmpPenalties(emp.id,mk);
   const a=autoAtt(emp.id,mk),fp=forgotPenalty(emp,a,branchCfg(),isWaived(emp.id,mk)),w=getEmpWithdrawals(emp.id,mk),wd=w.total;
-  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,salesPct:salesShare(md,emp.id),badges:empBadges(emp.id,mk).map(x=>{const b=badgeOf(x);return{k:b.k,icon:b.icon,name:b.name,desc:b.desc,note:x.note||''}}),commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
+  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,salesPct:salesShare(md,emp.id),commOff:!!commData.off,badges:empBadges(emp.id,mk).map(x=>{const b=badgeOf(x);return{k:b.k,icon:b.icon,name:b.name,desc:b.desc,note:x.note||''}}),commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
 }
 // employee's share of the branch's total sales for the month (0 when the employee has no sales entered)
 function salesShare(md,empId){const es=(md.empSales||{})[empId]||0,tot=(md.sales||0)||Object.values(md.empSales||{}).reduce((t,v)=>t+(+v||0),0);return es>0&&tot>0?Math.round(es/tot*1000)/10:0}
@@ -834,7 +837,7 @@ function buildOwnerNotifs(){
   const mk=monthKey(),notifs=[];
   const pending=(missions[mk]||[]).filter(m=>m.completed&&m.score===undefined);
   if(pending.length>0){const id='owner_pending_'+mk;if(!state.dismissedNotifs.includes(id))notifs.push({id,type:'owner',icon:'🎯',msg:`${pending.length} مهمة مكتملة تنتظر التقييم`})}
-  const md=getMonthData();if((md.sales||0)>0&&(md.sales||0)<commThreshold()){const id='owner_sales_'+mk;if(!state.dismissedNotifs.includes(id))notifs.push({id,type:'owner',icon:'⚠️',msg:`المبيعات أقل من حد العمولة — تحتاج ${fmtNum(commThreshold()-(md.sales||0))} ج.م إضافية`})}
+  const md=getMonthData();if(commOn()&&(md.sales||0)>0&&(md.sales||0)<commThreshold()){const id='owner_sales_'+mk;if(!state.dismissedNotifs.includes(id))notifs.push({id,type:'owner',icon:'⚠️',msg:`المبيعات أقل من حد العمولة — تحتاج ${fmtNum(commThreshold()-(md.sales||0))} ج.م إضافية`})}
   return notifs;
 }
 function buildSeniorNotifs(){
@@ -1118,6 +1121,7 @@ function renderPayroll(){
 }
 
 function renderCommission(){
+  if(!commOn())return`<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px;margin-bottom:8px">⛔</div><div style="font-size:17px;font-weight:800">العمولة متوقفة لفرع ${esc(branchName(state.branch))}</div><div style="color:var(--text2);font-size:13px;margin-top:6px">لا تُحسب عمولة لأي موظف في هذا الفرع.${isOwner()?' يمكنك تفعيلها من «الإعدادات ← شرائح العمولة».':''}</div></div>`;
   const md=getMonthData(),commData=calcCommission(md.sales||0);
   const tl=getTiers(),top=tl.length?tl[tl.length-1]:null;
   const tiers=[{l:'لا عمولة',min:0,max:(tl[0]?tl[0].min-1:Infinity),rate:0},...tl.map((t,i)=>({l:t.rate+'%',min:t.min,max:tl[i+1]?tl[i+1].min-1:Infinity,rate:t.rate}))];
@@ -1226,8 +1230,8 @@ function renderInsights(){
   const md=getMonthData(),mk=monthKey(),commData=calcCommission(md.sales||0);
   const totalSal=employees.reduce((s,e)=>s+calcSalary(e,md.hours[e.id]||0),0);
   const insights=[];
-  if((md.sales||0)<commThreshold())insights.push({t:'warn',icon:'⚠️',title:'المبيعات أقل من حد العمولة',body:`تحتاج ${fmtNum(commThreshold()-(md.sales||0))} ج.م إضافية لبدء العمولة`});
-  else insights.push({t:'success',icon:'✅',title:'تم تحقيق حد العمولة',body:`${fmtNum(md.sales)} ج.م — ${commData.rate}% — مجمع ${fmtNum(commData.pool,2)} ج.م`});
+  if(commOn()&&(md.sales||0)<commThreshold())insights.push({t:'warn',icon:'⚠️',title:'المبيعات أقل من حد العمولة',body:`تحتاج ${fmtNum(commThreshold()-(md.sales||0))} ج.م إضافية لبدء العمولة`});
+  else if(commOn())insights.push({t:'success',icon:'✅',title:'تم تحقيق حد العمولة',body:`${fmtNum(md.sales)} ج.م — ${commData.rate}% — مجمع ${fmtNum(commData.pool,2)} ج.م`});
   if(md.np&&totalSal>0){const r=totalSal/md.np*100;if(r>35)insights.push({t:'warn',icon:'💸',title:`تكلفة العمالة مرتفعة — ${r.toFixed(1)}%`,body:'تكلفة العمالة تتجاوز 35% من صافي الربح'});else insights.push({t:'success',icon:'💰',title:`تكلفة العمالة معقولة — ${r.toFixed(1)}%`,body:'نسبة صحية من صافي الربح'})}
   const target=getMonthTarget();if(target>0&&(md.sales||0)>0){const pct=((md.sales||0)/target*100);insights.push({t:pct>=100?'success':'warn',icon:pct>=100?'🎯':'📊',title:`تحقيق الهدف: ${pct.toFixed(1)}%`,body:`${fmtNum(md.sales||0)} من أصل ${fmtNum(target)} ج.م`})}
   const top=[...employees].sort((a,b)=>getKPI(b.id,mk)-getKPI(a.id,mk))[0];
@@ -1300,6 +1304,7 @@ function renderSettings(){
       ${(()=>{const missing=employeesAll.filter(e=>!e.leftMk&&!users.some(u=>u.empId===e.id));return missing.length?`<div style="margin-top:12px;padding:10px 14px;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;font-size:12px;color:var(--gold2)">⚠️ ${esc(branchName(state.branch))}: ${missing.length} موظف بدون حساب دخول: ${missing.map(e=>esc(e.name)).join('، ')}</div>`:''})()}
     </div>
     <div class="card"><div class="section-header"><h3>🏦 شرائح العمولة لكل ربع</h3><button class="btn btn-primary btn-sm" id="save-tiers-btn">💾 حفظ الشرائح</button></div>
+      <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:10px 12px;border-radius:10px;cursor:pointer;background:${commOn()?'rgba(22,163,74,.08)':'rgba(220,38,38,.07)'};border:1px solid ${commOn()?'rgba(22,163,74,.3)':'rgba(220,38,38,.3)'}"><input type="checkbox" id="comm-on"${commOn()?' checked':''} style="width:auto;margin:0;transform:scale(1.3)"><span style="font-weight:800;color:${commOn()?'var(--success)':'var(--danger)'}">${commOn()?'✅ العمولة مفعّلة':'⛔ العمولة متوقفة'} — ${esc(branchName(state.branch))}</span><span style="font-size:11px;color:var(--text2)">(اضغط للتغيير — الشرائح تبقى محفوظة)</span></label>
       <p style="color:var(--text2);font-size:12px;margin-bottom:14px">إذا وصلت مبيعات الشهر إلى «من مبيعات» تُحسب النسبة على كامل المبيعات. أقل من أول شريحة = لا عمولة. اترك الصف فارغاً لحذفه.</p>
       <div class="grid-2">${['Q1','Q2','Q3','Q4'].map(q=>{const rows=[...((commissionTiers||{})[q]||[])];while(rows.length<6)rows.push({min:'',rate:''});return`<div class="card-sm"><div style="font-size:12px;font-weight:800;color:var(--text2);margin-bottom:8px">${q} — ${q==='Q1'?'يناير–مارس':q==='Q2'?'أبريل–يونيو':q==='Q3'?'يوليو–سبتمبر':'أكتوبر–ديسمبر'}</div><div style="display:grid;grid-template-columns:2fr 1fr;gap:6px;font-size:11px;color:var(--text3);margin-bottom:4px"><span>من مبيعات (ج.م)</span><span>النسبة %</span></div>${rows.map(r=>`<div style="display:grid;grid-template-columns:2fr 1fr;gap:6px;margin-bottom:6px"><input type="number" class="tier-min" data-q="${q}" value="${r.min}" min="0"><input type="number" class="tier-rate" data-q="${q}" value="${r.rate}" step="0.1" min="0"></div>`).join('')}</div>`}).join('')}</div>
     </div>
@@ -1339,12 +1344,12 @@ function renderMyPerfFor(empId){
   </div>
   <div class="grid-4" style="margin-bottom:16px">
     <div class="stat-card"><div class="sc-label">الراتب الأساسي</div><div class="sc-val" style="color:var(--accent3)">${fmtNum(sal,2)}<span style="font-size:11px"> ج.م</span></div><div class="sc-sub">${fmtNum(hrs,2)} ساعة${st.auto?' · ⏱️ تلقائي':''}</div></div>
-    <div class="stat-card"><div class="sc-label">العمولة</div><div class="sc-val" style="color:var(--gold2)">${fmtNum(comm,2)}<span style="font-size:11px"> ج.م</span></div></div>
+    <div class="stat-card"><div class="sc-label">العمولة</div>${st.commOff?'<div class="sc-val" style="color:var(--text3);font-size:18px">متوقفة</div>':`<div class="sc-val" style="color:var(--gold2)">${fmtNum(comm,2)}<span style="font-size:11px"> ج.م</span></div>`}</div>
     <div class="stat-card"><div class="sc-label">المكافآت</div><div class="sc-val" style="color:var(--success)">${sgn(bt,'+')}<span style="font-size:11px"> ج.م</span></div></div>
     <div class="stat-card"><div class="sc-label">صافي الراتب</div><div class="sc-val" style="color:var(--gold2);font-size:20px">${fmtNum(net,2)}<span style="font-size:11px"> ج.م</span></div></div>
   </div>
   <div class="grid-2"><div class="card"><h3 style="margin-bottom:16px">📊 درجة KPI</h3><div style="text-align:center;padding:16px"><div style="font-size:64px;font-weight:800;color:${kpiColor(kpiScore)}">${kpiScore}</div><div style="font-size:16px;color:var(--text2);margin-top:4px">${kpiLabel(kpiScore)}</div><div class="kpi-bar" style="margin-top:16px"><div class="kpi-fill" style="width:${kpiScore}%;background:${kpiColor(kpiScore)}"></div></div></div></div>
-  <div class="card"><h3 style="margin-bottom:14px">📋 ملخص الأداء</h3>${[['سعر الساعة',fmtNum(+emp.hourRate||0)],['الراتب الأساسي',fmtNum(sal,2)+' ج.م'],['العمولة ('+emp.commPct+'%)',fmtNum(comm,2)+' ج.م'],...(empSales>0?[['مبيعاتك الشخصية',fmtNum(empSales)+' ج.م'],...(st.salesPct>0?[['نسبتك من إجمالي المبيعات',fmtNum(st.salesPct,1)+'%']]:[])]:[]),['ساعات العمل'+(st.auto?' (تلقائي)':''),fmtNum(hrs,2)+' ساعة'],['أيام الحضور',(att.total||0)+' يوم'],['أيام في الموعد',att.onTime+' يوم'],['أيام متأخر',att.late+' يوم'],['إجمالي التأخير',`${att.lateHours}س ${att.lateMinutes}د`],...(st.auto?[['نسيان الانصراف',`${st.forgotPen?.count||0} مرة (المسموح ${branchCfg().free_forgets})`]]:[]),['المكافآت',sgn(bt,'+')+' ج.م'],['الجزاءات',penShow(pt,st.ptDays,st.ptDayAmt)],['المسحوبات',sgn(wd,'-',2)+' ج.م'],['صافي الراتب',fmtNum(net,2)+' ج.م']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="font-weight:700">${v}</span></div>`).join('')}</div></div>
+  <div class="card"><h3 style="margin-bottom:14px">📋 ملخص الأداء</h3>${[['سعر الساعة',fmtNum(+emp.hourRate||0)],['الراتب الأساسي',fmtNum(sal,2)+' ج.م'],['العمولة'+(st.commOff?'':' ('+emp.commPct+'%)'),st.commOff?'متوقفة لهذا الفرع':fmtNum(comm,2)+' ج.م'],...(empSales>0?[['مبيعاتك الشخصية',fmtNum(empSales)+' ج.م'],...(st.salesPct>0?[['نسبتك من إجمالي المبيعات',fmtNum(st.salesPct,1)+'%']]:[])]:[]),['ساعات العمل'+(st.auto?' (تلقائي)':''),fmtNum(hrs,2)+' ساعة'],['أيام الحضور',(att.total||0)+' يوم'],['أيام في الموعد',att.onTime+' يوم'],['أيام متأخر',att.late+' يوم'],['إجمالي التأخير',`${att.lateHours}س ${att.lateMinutes}د`],...(st.auto?[['نسيان الانصراف',`${st.forgotPen?.count||0} مرة (المسموح ${branchCfg().free_forgets})`]]:[]),['المكافآت',sgn(bt,'+')+' ج.م'],['الجزاءات',penShow(pt,st.ptDays,st.ptDayAmt)],['المسحوبات',sgn(wd,'-',2)+' ج.م'],['صافي الراتب',fmtNum(net,2)+' ج.م']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="font-weight:700">${v}</span></div>`).join('')}</div></div>
   ${myBadgesCard(empId,st.badges||[])}
   ${wdList.length?`<div class="card" style="margin-top:16px"><div class="section-header"><h3>🛒 المسحوبات — ${MONTHS_AR[state.month]}</h3><span class="badge badge-red">\u200E-${fmtNum(wd,2)} ج.م</span></div><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>المبلغ</th><th>ملاحظة</th></tr></thead><tbody>${[...wdList].sort((x,y)=>x.date<y.date?-1:1).map(x=>`<tr><td style="white-space:nowrap">${esc(x.date)}</td><td>${esc(x.type)}</td><td style="color:var(--danger);font-weight:700">${fmtNum(x.amount,2)} ج.م</td><td style="font-size:12px;color:var(--text2)">${esc(x.note||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}`+CRM.perfCard(empId);
 }
@@ -2216,13 +2221,19 @@ function bindEvents(){
     saveAll();render();showToast('تم حفظ الأهداف الفصلية ✓');
   });
   document.querySelectorAll('.qt-tier').forEach(sel=>{sel.onchange=()=>{const q=sel.dataset.q,t=tiersOfQ(q).find(x=>x.rate===+sel.value);const inp=document.querySelector(`.qt-inp[data-q="${q}"]`);if(t&&inp)inp.placeholder='تلقائي: '+fmtNum(t.min*3)}});
+  document.getElementById('comm-on')?.addEventListener('change',e=>{
+    const on=e.target.checked;
+    if(!confirm(on?`تفعيل العمولة لفرع ${branchName(state.branch)}؟`:`إيقاف العمولة لفرع ${branchName(state.branch)}؟\nلن تُحسب عمولة لأي موظف في هذا الفرع حتى تعيد تفعيلها.`)){e.target.checked=!on;return}
+    if(on)delete commissionTiers.off;else commissionTiers.off=true;
+    saveAll();render();showToast(on?'تم تفعيل العمولة ✓':'تم إيقاف العمولة لهذا الفرع ✓');
+  });
   document.getElementById('save-tiers-btn')?.addEventListener('click',()=>{
     const out={Q1:[],Q2:[],Q3:[],Q4:[]},mins=[...document.querySelectorAll('.tier-min')],rates=[...document.querySelectorAll('.tier-rate')];
     for(let i=0;i<mins.length;i++){const q=mins[i].dataset.q,mn=mins[i].value.trim(),rt=rates[i].value.trim();if(mn===''&&rt==='')continue;
       if(!(+mn>0)||!(+rt>0)){showToast(`${q}: أدخل المبيعات والنسبة معاً (أرقام أكبر من صفر)`,'error');return}
       out[q].push({min:+mn,rate:+rt})}
     Object.keys(out).forEach(q=>out[q].sort((a,b)=>a.min-b.min));
-    out._v=2;commissionTiers=out;saveAll();render();showToast('تم حفظ شرائح العمولة ✓ — الأهداف التلقائية تحدّثت');
+    out._v=2;if(commissionTiers&&commissionTiers.off)out.off=true;commissionTiers=out;saveAll();render();showToast('تم حفظ شرائح العمولة ✓ — الأهداف التلقائية تحدّثت');
   });
   document.getElementById('save-month-targets-btn')?.addEventListener('click',()=>{document.querySelectorAll('.month-target-inp').forEach(inp=>{const mi=+inp.dataset.month,q=monthToQuarter(mi);if(!quarterlyTargets[q])quarterlyTargets[q]={target:0,months:{}};if(!quarterlyTargets[q].months)quarterlyTargets[q].months={};const val=inp.value.trim();if(val===''){delete quarterlyTargets[q].months[mi]}else{quarterlyTargets[q].months[mi]=+val}});saveAll();render();showToast('تم حفظ الأهداف الشهرية ✓')});
   document.getElementById('force-load-btn')?.addEventListener('click',async()=>{
