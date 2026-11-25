@@ -399,10 +399,30 @@ function penShow(pt,days,dayAmt){
   if(money>0.004)parts.push('\u200E-'+fmtNum(money,2)+' ج.م');parts.push('خصم '+daysText(days));return parts.join(' + ');
 }
 function penItemAmount(x,money){return x.days&&!isOwner()?'خصم '+daysText(x.days):'\u200E-'+money(x.amount)}
+// Badges (أوسمة): motivational recognition, stored per month in monthlyData[mk].badges
+const BADGES=[
+  {k:'star',icon:'⭐',name:'نجم الشهر',desc:'أفضل أداء عام هذا الشهر'},
+  {k:'service',icon:'💚',name:'خدمة عملاء مميزة',desc:'تعامل راقٍ واهتمام حقيقي بكل عميل'},
+  {k:'followup',icon:'📞',name:'بطل المتابعة',desc:'متابعات العملاء في موعدها وباهتمام'},
+  {k:'sales',icon:'📈',name:'بطل المبيعات',desc:'مبيعات مميزة هذا الشهر'},
+  {k:'punctual',icon:'⏰',name:'الالتزام بالمواعيد',desc:'حضور منتظم وفي الموعد'},
+  {k:'team',icon:'🤝',name:'روح الفريق',desc:'يساعد زملاءه ويدعم الفريق'},
+  {k:'helper',icon:'🦸',name:'السند وقت الضغط',desc:'غطّى زميلاً أو ساعد وقت الزحام'},
+  {k:'initiative',icon:'💡',name:'صاحب مبادرة',desc:'فكرة أو مبادرة حسّنت العمل'},
+  {k:'accuracy',icon:'🎯',name:'الدقة والأمانة',desc:'دقة في الصرف والحسابات والجرد'},
+  {k:'order',icon:'✨',name:'صيدلية منظمة',desc:'نظافة وترتيب الأرفف والمكان'},
+  {k:'growth',icon:'🌱',name:'أفضل تطور',desc:'تحسّن واضح عن الشهر السابق'},
+  {k:'learner',icon:'📚',name:'المتعلم المتميز',desc:'اجتهاد في التعلم ومعرفة الأدوية'}
+];
+function badgeOf(x){const d=BADGES.find(b=>b.k===x.k);return d?{...d}:{k:'custom',icon:'🏅',name:x.name||'وسام',desc:''}}
+function empBadges(empId,mk){return((monthlyData[mk]||{}).badges||[]).filter(x=>x.empId===empId)}
+function badgeChips(list,size=18){return(list||[]).map(b=>`<span title="${esc(b.name)}" style="font-size:${size}px;line-height:1">${b.icon}</span>`).join('')}
 const PENALTY_REASONS=['غياب بدون إذن','إجازة بدون طلب مسبق (أقل من يومين)','تأخير متكرر','مخالفة تعليمات العمل'];
 const BONUS_REASONS=['يوم عمل إضافي','تغطية وردية زميل','أداء متميز'];
 function kpiColor(s){if(s>=90)return'#10b981';if(s>=80)return'#3b82f6';if(s>=70)return'#f59e0b';if(s>=60)return'#f97316';return'#ef4444'}
 function kpiLabel(s){if(s>=90)return'متميز';if(s>=80)return'مرتفع';if(s>=70)return'جيد';if(s>=60)return'مقبول';return'يحتاج تحسين'}
+// signed amount: «+923» / «-100.00», and plain «0» when there is nothing
+function sgn(v,sign,dec=0){return v>0?'\u200E'+sign+fmtNum(v,dec):fmtNum(0,dec)}
 function fmtNum(n,dec=0){const s=Number(n||0).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});return s[0]==='-'?'\u200E'+s:s}
 function monthToQuarter(m){if(m<=2)return'Q1';if(m<=5)return'Q2';if(m<=8)return'Q3';return'Q4'}
 function monthKey(){return`${state.year}-${state.month}`}
@@ -661,15 +681,18 @@ function empMonthStats(emp,mk){
   const md=getMonthData(mk),commData=calcCommission(md.sales||0,mk),hrs=(md.hours||{})[emp.id]||0,sal=calcSalary(emp,hrs);
   const comm=emp.commPct>0?commData.pool*(emp.commPct/100):0,{total:bt}=getEmpBonuses(emp.id,mk),{total:pt}=getEmpPenalties(emp.id,mk);
   const a=autoAtt(emp.id,mk),fp=forgotPenalty(emp,a,branchCfg(),isWaived(emp.id,mk)),w=getEmpWithdrawals(emp.id,mk),wd=w.total;
-  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
+  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,salesPct:salesShare(md,emp.id),badges:empBadges(emp.id,mk).map(x=>{const b=badgeOf(x);return{k:b.k,icon:b.icon,name:b.name,desc:b.desc,note:x.note||''}}),commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
 }
+// employee's share of the branch's total sales for the month (0 when the employee has no sales entered)
+function salesShare(md,empId){const es=(md.empSales||{})[empId]||0,tot=(md.sales||0)||Object.values(md.empSales||{}).reduce((t,v)=>t+(+v||0),0);return es>0&&tot>0?Math.round(es/tot*1000)/10:0}
 function buildEmpView(empId){
   const e=employees.find(x=>x.id===empId);
   const months={};allMonthKeys().forEach(mk=>{months[mk]=empMonthStats(e,mk)});
   const ms={};Object.entries(missions||{}).forEach(([mk,arr])=>{const mine=(arr||[]).filter(m=>m.empId===empId);if(mine.length)ms[mk]=mine});
   return{emp:{id:e.id,name:e.name,role:e.role,shift:e.shift,commPct:e.commPct,canUploadPhoto:!!e.canUploadPhoto,fixedBonus:e.fixedBonus||0,hourRate:e.hourRate,scheduledTime:e.scheduledTime,branch:state.branch,branchName:branchName(state.branch),cfg:branchCfg()},months,missions:ms,messages:messages.filter(m=>m.to===empId)};
 }
-function buildLeaderboard(){const out={};allMonthKeys().forEach(mk=>{out[mk]=employees.map(e=>({id:e.id,name:e.name,role:e.role,kpi:getKPI(e.id,mk)}))});return out}
+function lbBadges(empId,mk){return empBadges(empId,mk).map(x=>{const b=badgeOf(x);return{icon:b.icon,name:b.name}})}
+function buildLeaderboard(){const out={};allMonthKeys().forEach(mk=>{out[mk]=employees.map(e=>({id:e.id,name:e.name,role:e.role,kpi:getKPI(e.id,mk),badges:lbBadges(e.id,mk)}))});return out}
 async function publishEmpViews(){
   const rows=[],cur=state.branch;
   const add=(id,b,obj)=>{const s=stableStr(obj);if(s!==_viewSynced[id])rows.push({id,b,s})};
@@ -1141,15 +1164,18 @@ function renderBonuses(){
   const totalB=b.reduce((s,x)=>s+Number(x.amount),0);
   const totalP=p.reduce((s,x)=>s+Number(x.amount),0);
   return`<div class="grid-2">
-    <div class="card"><div class="section-header"><h3>🎁 المكافآت <span class="badge badge-green" style="margin-right:6px">\u200E+${fmtNum(totalB)} ج.م</span></h3><button class="btn btn-success btn-sm" id="add-bonus-btn">+ إضافة</button></div>
+    <div class="card"><div class="section-header"><h3>🎁 المكافآت <span class="badge badge-green" style="margin-right:6px">${sgn(totalB,'+')} ج.م</span></h3><button class="btn btn-success btn-sm" id="add-bonus-btn">+ إضافة</button></div>
       ${b.length===0?'<p style="color:var(--text3);font-size:13px">لا توجد مكافآت هذا الشهر</p>':''}
       ${b.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${bpLabel(x)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--success);font-weight:800">\u200E+${fmtNum(x.amount)}</span><button class="btn btn-danger btn-xs" data-del-bonus="${i}">×</button></div></div>`).join('')}
     </div>
-    <div class="card"><div class="section-header"><h3>⚠️ الجزاءات <span class="badge badge-red" style="margin-right:6px">${isOwner()?'\u200E-'+fmtNum(totalP)+' ج.م':penShow(totalP,p.reduce((t,x)=>t+(+x.days||0),0),p.reduce((t,x)=>t+(x.days?+x.amount:0),0))}</span></h3><button class="btn btn-danger btn-sm" id="add-penalty-btn">+ إضافة</button></div>
+    <div class="card"><div class="section-header"><h3>⚠️ الجزاءات <span class="badge badge-red" style="margin-right:6px">${isOwner()?sgn(totalP,'-')+' ج.م':penShow(totalP,p.reduce((t,x)=>t+(+x.days||0),0),p.reduce((t,x)=>t+(x.days?+x.amount:0),0))}</span></h3><button class="btn btn-danger btn-sm" id="add-penalty-btn">+ إضافة</button></div>
       ${p.length===0?'<p style="color:var(--text3);font-size:13px">لا توجد جزاءات هذا الشهر</p>':''}
       ${p.map((x,i)=>`<div class="card-sm" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${employees.find(e=>e.id===x.empId)?.name||x.empId}</div><div style="font-size:11px;color:var(--text2)">${bpLabel(x)} — ${x.visible?'مرئية':'سرية'}</div></div><div style="display:flex;gap:8px;align-items:center"><span style="color:var(--danger);font-weight:800">${penItemAmount(x,v=>fmtNum(v))}</span><button class="btn btn-danger btn-xs" data-del-penalty="${i}">×</button></div></div>`).join('')}
     </div>
-  </div>`;
+  </div>
+  ${(()=>{const bd=(monthlyData[mk]||{}).badges||[];return`<div class="card" style="margin-top:16px"><div class="section-header"><h3>🏅 الأوسمة — ${MONTHS_AR[state.month]} <span class="badge badge-green" style="margin-right:6px">${bd.length}</span></h3><button class="btn btn-primary btn-sm" id="add-badge-btn">+ منح وسام</button></div>
+    <p style="color:var(--text2);font-size:12px;margin-bottom:10px">تقدير معنوي يظهر للموظف في «أدائي الشهري» وبجوار اسمه في «المتصدرون» — لا يؤثر على الراتب.</p>
+    ${bd.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px">${bd.map(x=>{const b=badgeOf(x);return`<div class="card-sm" style="display:flex;gap:10px;align-items:center"><div style="font-size:28px">${b.icon}</div><div style="flex:1"><div style="font-weight:700">${esc(employees.find(e=>e.id===x.empId)?.name||x.empId)}</div><div style="font-size:12px;color:var(--text2)">${esc(b.name)}${x.note?' — '+esc(x.note):''}</div>${x.by?`<div style="font-size:10px;color:var(--text3)">منحها: ${esc(x.by)}</div>`:''}</div><button class="btn btn-danger btn-xs" data-del-badge="${esc(x.id)}">×</button></div>`}).join('')}</div>`:'<p style="color:var(--text3);font-size:13px">لم يُمنح أي وسام هذا الشهر</p>'}</div>`})()}`;
 }
 
 function renderWithdrawals(){
@@ -1185,15 +1211,15 @@ function renderKPI(){
 function renderLeaderboard(){
   const mk=monthKey(); // salaries are not shown on the leaderboard
   const ranked=isStaff()
-    ?[...employees].map(e=>({e,kpiScore:getKPI(e.id,mk)})).sort((a,b)=>b.kpiScore-a.kpiScore)
-    :rankedFor(mk).map(r=>({e:r,kpiScore:r.kpi}));
+    ?[...employees].map(e=>({e,kpiScore:getKPI(e.id,mk),badges:lbBadges(e.id,mk)})).sort((a,b)=>b.kpiScore-a.kpiScore)
+    :rankedFor(mk).map(r=>({e:r,kpiScore:r.kpi,badges:r.badges||[]}));
   if(!ranked.length)return`<div class="card" style="text-align:center;color:var(--text3);padding:40px">لا توجد بيانات لهذا الشهر بعد</div>`;
   const top3=ranked.slice(0,3);
   const rest=ranked.slice(3);
   return`<div class="section-header"><h3>🏆 المتصدرون — ${MONTHS_AR[state.month]} ${state.year}</h3><span class="badge badge-gray">${ranked.length} موظف</span></div>
-  <div class="grid-3" style="margin-bottom:20px">${top3.map((r,i)=>`<div class="podium-card rank-${i+1}"><div style="font-size:${i===0?'36px':'28px'};margin-bottom:6px">${['🥇','🥈','🥉'][i]}</div><div style="font-weight:800;font-size:15px">${r.e.name}</div><div style="font-size:11px;color:var(--text2);margin-top:2px">${r.e.role}</div><div style="font-size:36px;font-weight:800;color:${kpiColor(r.kpiScore)};margin:12px 0">${r.kpiScore}</div><div class="kpi-bar" style="margin-bottom:8px"><div class="kpi-fill" style="width:${r.kpiScore}%;background:${kpiColor(r.kpiScore)}"></div></div><span class="badge" style="background:${kpiColor(r.kpiScore)}22;color:${kpiColor(r.kpiScore)}">${kpiLabel(r.kpiScore)}</span>${i===0?`<div style="position:absolute;top:-8px;right:-8px;font-size:22px">👑</div>`:''}</div>`).join('')}
+  <div class="grid-3" style="margin-bottom:20px">${top3.map((r,i)=>`<div class="podium-card rank-${i+1}"><div style="font-size:${i===0?'36px':'28px'};margin-bottom:6px">${['🥇','🥈','🥉'][i]}</div><div style="font-weight:800;font-size:15px">${r.e.name}</div>${r.badges.length?`<div style="margin-top:4px;display:flex;gap:4px;justify-content:center;flex-wrap:wrap">${badgeChips(r.badges,20)}</div>`:''}<div style="font-size:11px;color:var(--text2);margin-top:2px">${r.e.role}</div><div style="font-size:36px;font-weight:800;color:${kpiColor(r.kpiScore)};margin:12px 0">${r.kpiScore}</div><div class="kpi-bar" style="margin-bottom:8px"><div class="kpi-fill" style="width:${r.kpiScore}%;background:${kpiColor(r.kpiScore)}"></div></div><span class="badge" style="background:${kpiColor(r.kpiScore)}22;color:${kpiColor(r.kpiScore)}">${kpiLabel(r.kpiScore)}</span>${i===0?`<div style="position:absolute;top:-8px;right:-8px;font-size:22px">👑</div>`:''}</div>`).join('')}
   </div>
-  <div class="card">${rest.map((r,i)=>`<div style="display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--border)"><div style="width:28px;text-align:center;font-weight:800;color:var(--text3);font-size:16px">${i+4}</div><div style="flex:1"><div style="font-weight:700">${r.e.name}</div><div style="font-size:11px;color:var(--text2)">${r.e.role}</div><div class="kpi-bar" style="margin-top:5px"><div class="kpi-fill" style="width:${r.kpiScore}%;background:${kpiColor(r.kpiScore)}"></div></div></div><div style="text-align:center;min-width:52px"><div style="font-weight:800;color:${kpiColor(r.kpiScore)};font-size:18px">${r.kpiScore}</div></div></div>`).join('')}</div>`;
+  <div class="card">${rest.map((r,i)=>`<div style="display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--border)"><div style="width:28px;text-align:center;font-weight:800;color:var(--text3);font-size:16px">${i+4}</div><div style="flex:1"><div style="font-weight:700">${r.e.name} ${badgeChips(r.badges,16)}</div><div style="font-size:11px;color:var(--text2)">${r.e.role}</div><div class="kpi-bar" style="margin-top:5px"><div class="kpi-fill" style="width:${r.kpiScore}%;background:${kpiColor(r.kpiScore)}"></div></div></div><div style="text-align:center;min-width:52px"><div style="font-weight:800;color:${kpiColor(r.kpiScore)};font-size:18px">${r.kpiScore}</div></div></div>`).join('')}</div>`;
 }
 
 function renderInsights(){
@@ -1308,18 +1334,29 @@ function renderMyPerfFor(empId){
   const mk=monthKey(),st=empStats(empId,mk),{hrs,sal,comm,bt,pt,net,att,empSales}=st,kpiScore=st.kpi,wd=st.wd||0,wdList=st.wdList||[];
   return`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px;display:flex;align-items:center;gap:14px">
     <div style="width:50px;height:50px;border-radius:50%;color:#fff;background:linear-gradient(135deg,var(--accent),var(--brand));display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800">${esc(emp.name.charAt(0))}</div>
-    <div><div style="font-size:17px;font-weight:800">${esc(emp.name)}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">${esc(emp.role)} — ${esc(emp.shift)}</div></div>
+    <div><div style="font-size:17px;font-weight:800">${esc(emp.name)}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">${esc(emp.role)} — ${esc(emp.shift)}</div><div style="font-size:13px;font-weight:700;color:var(--accent3);margin-top:4px">سعر الساعة ${fmtNum(+emp.hourRate||0)}</div></div>
     <div style="margin-right:auto;text-align:center"><div style="font-size:11px;color:var(--text3);margin-bottom:6px">${MONTHS_AR[state.month]} ${state.year} (${payRangeLabel()})</div><button class="btn btn-ghost btn-sm no-print" data-payslip="${esc(empId)}">🧾 طباعة كشف الراتب</button></div>
   </div>
   <div class="grid-4" style="margin-bottom:16px">
     <div class="stat-card"><div class="sc-label">الراتب الأساسي</div><div class="sc-val" style="color:var(--accent3)">${fmtNum(sal,2)}<span style="font-size:11px"> ج.م</span></div><div class="sc-sub">${fmtNum(hrs,2)} ساعة${st.auto?' · ⏱️ تلقائي':''}</div></div>
     <div class="stat-card"><div class="sc-label">العمولة</div><div class="sc-val" style="color:var(--gold2)">${fmtNum(comm,2)}<span style="font-size:11px"> ج.م</span></div></div>
-    <div class="stat-card"><div class="sc-label">المكافآت</div><div class="sc-val" style="color:var(--success)">\u200E+${fmtNum(bt)}<span style="font-size:11px"> ج.م</span></div></div>
+    <div class="stat-card"><div class="sc-label">المكافآت</div><div class="sc-val" style="color:var(--success)">${sgn(bt,'+')}<span style="font-size:11px"> ج.م</span></div></div>
     <div class="stat-card"><div class="sc-label">صافي الراتب</div><div class="sc-val" style="color:var(--gold2);font-size:20px">${fmtNum(net,2)}<span style="font-size:11px"> ج.م</span></div></div>
   </div>
   <div class="grid-2"><div class="card"><h3 style="margin-bottom:16px">📊 درجة KPI</h3><div style="text-align:center;padding:16px"><div style="font-size:64px;font-weight:800;color:${kpiColor(kpiScore)}">${kpiScore}</div><div style="font-size:16px;color:var(--text2);margin-top:4px">${kpiLabel(kpiScore)}</div><div class="kpi-bar" style="margin-top:16px"><div class="kpi-fill" style="width:${kpiScore}%;background:${kpiColor(kpiScore)}"></div></div></div></div>
-  <div class="card"><h3 style="margin-bottom:14px">📋 ملخص الأداء</h3>${[['الراتب الأساسي',fmtNum(sal,2)+' ج.م'],['العمولة ('+emp.commPct+'%)',fmtNum(comm,2)+' ج.م'],['مبيعاتك الشخصية',empSales>0?fmtNum(empSales)+' ج.م':'—'],['ساعات العمل'+(st.auto?' (تلقائي)':''),fmtNum(hrs,2)+' ساعة'],['أيام الحضور',(att.total||0)+' يوم'],['أيام في الموعد',att.onTime+' يوم'],['أيام متأخر',att.late+' يوم'],['إجمالي التأخير',`${att.lateHours}س ${att.lateMinutes}د`],...(st.auto?[['نسيان الانصراف',`${st.forgotPen?.count||0} مرة (المسموح ${branchCfg().free_forgets})`]]:[]),['المكافآت','\u200E+'+fmtNum(bt)+' ج.م'],['الجزاءات',penShow(pt,st.ptDays,st.ptDayAmt)],['المسحوبات','\u200E-'+fmtNum(wd,2)+' ج.م'],['صافي الراتب',fmtNum(net,2)+' ج.م']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="font-weight:700">${v}</span></div>`).join('')}</div></div>
+  <div class="card"><h3 style="margin-bottom:14px">📋 ملخص الأداء</h3>${[['سعر الساعة',fmtNum(+emp.hourRate||0)],['الراتب الأساسي',fmtNum(sal,2)+' ج.م'],['العمولة ('+emp.commPct+'%)',fmtNum(comm,2)+' ج.م'],...(empSales>0?[['مبيعاتك الشخصية',fmtNum(empSales)+' ج.م'],...(st.salesPct>0?[['نسبتك من إجمالي المبيعات',fmtNum(st.salesPct,1)+'%']]:[])]:[]),['ساعات العمل'+(st.auto?' (تلقائي)':''),fmtNum(hrs,2)+' ساعة'],['أيام الحضور',(att.total||0)+' يوم'],['أيام في الموعد',att.onTime+' يوم'],['أيام متأخر',att.late+' يوم'],['إجمالي التأخير',`${att.lateHours}س ${att.lateMinutes}د`],...(st.auto?[['نسيان الانصراف',`${st.forgotPen?.count||0} مرة (المسموح ${branchCfg().free_forgets})`]]:[]),['المكافآت',sgn(bt,'+')+' ج.م'],['الجزاءات',penShow(pt,st.ptDays,st.ptDayAmt)],['المسحوبات',sgn(wd,'-',2)+' ج.م'],['صافي الراتب',fmtNum(net,2)+' ج.م']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="font-weight:700">${v}</span></div>`).join('')}</div></div>
+  ${myBadgesCard(empId,st.badges||[])}
   ${wdList.length?`<div class="card" style="margin-top:16px"><div class="section-header"><h3>🛒 المسحوبات — ${MONTHS_AR[state.month]}</h3><span class="badge badge-red">\u200E-${fmtNum(wd,2)} ج.م</span></div><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>المبلغ</th><th>ملاحظة</th></tr></thead><tbody>${[...wdList].sort((x,y)=>x.date<y.date?-1:1).map(x=>`<tr><td style="white-space:nowrap">${esc(x.date)}</td><td>${esc(x.type)}</td><td style="color:var(--danger);font-weight:700">${fmtNum(x.amount,2)} ج.م</td><td style="font-size:12px;color:var(--text2)">${esc(x.note||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}`+CRM.perfCard(empId);
+}
+function allBadgeCount(empId){
+  if(isStaff())return Object.values(monthlyData||{}).reduce((t,d)=>t+((d&&d.badges)||[]).filter(x=>x.empId===empId).length,0);
+  return Object.values(myView?.months||{}).reduce((t,m)=>t+((m&&m.badges)||[]).length,0);
+}
+function myBadgesCard(empId,list){
+  const total=allBadgeCount(empId);if(!list.length&&!total)return'';
+  return`<div class="card" style="margin-top:16px"><div class="section-header"><h3>🏅 أوسمتي — ${MONTHS_AR[state.month]}</h3>${total?`<span class="badge badge-green">مجموع أوسمتك: ${total}</span>`:''}</div>
+    ${list.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px">${list.map(b=>`<div style="background:linear-gradient(135deg,#fef9c3,#dcfce7);border:1px solid #fde68a;border-radius:12px;padding:12px;text-align:center"><div style="font-size:34px">${b.icon}</div><div style="font-weight:800;margin-top:4px">${esc(b.name)}</div>${b.desc?`<div style="font-size:11px;color:var(--text2);margin-top:2px">${esc(b.desc)}</div>`:''}${b.note?`<div style="font-size:12px;margin-top:6px;color:#166534">«${esc(b.note)}»</div>`:''}</div>`).join('')}</div>`
+      :'<p style="color:var(--text3);font-size:13px">لا توجد أوسمة هذا الشهر بعد — استمر، أوسمتك القادمة في الطريق 💪</p>'}</div>`;
 }
 function renderMyMissions(){
   const mk=monthKey(),empId=state.user.empId;
@@ -1817,6 +1854,15 @@ function renderModal(){
       <div id="bp-amount-box" class="form-group" style="display:none"><label>المبلغ (ج.م)</label><input id="modal-amount" type="number"></div>
       <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="modal-visible" checked style="width:auto;margin:0">مرئية للموظف</label></div>
       <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">💾 حفظ</button></div>`;
+  } else if(m.type==='add-badge'){
+    content=`<div class="modal-header"><h3>🏅 منح وسام</h3><button class="modal-close" id="modal-cancel">✕</button></div>
+      <div class="form-group"><label>الموظف</label><select id="modal-emp">${employees.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}</select></div>
+      <div class="form-group"><label>الوسام</label><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px">
+        ${BADGES.map((b,i)=>`<button type="button" class="badge-pick" data-k="${b.k}" title="${esc(b.desc)}" style="border:2px solid ${i===0?'var(--accent)':'var(--border)'};background:${i===0?'var(--bg3)':'#fff'};border-radius:10px;padding:8px;cursor:pointer;font-family:inherit;text-align:center"><div style="font-size:24px">${b.icon}</div><div style="font-size:12px;font-weight:700">${esc(b.name)}</div></button>`).join('')}
+        <button type="button" class="badge-pick" data-k="custom" style="border:2px solid var(--border);background:#fff;border-radius:10px;padding:8px;cursor:pointer;font-family:inherit;text-align:center"><div style="font-size:24px">🏅</div><div style="font-size:12px;font-weight:700">وسام آخر…</div></button></div>
+        <input id="badge-custom" type="text" maxlength="40" placeholder="اسم الوسام" style="margin-top:8px;display:none"></div>
+      <div class="form-group"><label>كلمة تقدير (اختياري)</label><input id="badge-note" type="text" maxlength="120" placeholder="مثال: شكراً لتغطية وردية زميلك يوم الجمعة"></div>
+      <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">🏅 منح الوسام</button></div>`;
   } else if(m.type==='add-mission'){
     _pendingImg=null;
     const ca=state.user.role==='owner'?employees:(SENIOR_ASSIGNS[state.user.empId]||employees.map(e=>e.id)).map(id=>employees.find(e=>e.id===id)).filter(Boolean);
@@ -2097,6 +2143,8 @@ function bindEvents(){
 
   // Bonuses/Penalties
   document.getElementById('add-bonus-btn')?.addEventListener('click',()=>{state.modal={type:'add-bonus'};render()});
+  document.getElementById('add-badge-btn')?.addEventListener('click',()=>{state.modal={type:'add-badge'};render()});
+  document.querySelectorAll('[data-del-badge]').forEach(btn=>{btn.onclick=()=>{const d=monthlyData[monthKey()];if(!d||!d.badges)return;if(!confirm('حذف هذا الوسام؟'))return;d.badges=d.badges.filter(x=>x.id!==btn.dataset.delBadge);saveAll();render()}});
   document.getElementById('add-penalty-btn')?.addEventListener('click',()=>{state.modal={type:'add-penalty'};render()});
   document.querySelectorAll('[data-del-bonus]').forEach(btn=>{btn.onclick=()=>{const mk=monthKey();bonuses[mk]=(bonuses[mk]||[]).filter((_,i)=>i!==+btn.dataset.delBonus);saveAll();render()}});
   document.querySelectorAll('[data-del-penalty]').forEach(btn=>{btn.onclick=()=>{const mk=monthKey();penalties[mk]=(penalties[mk]||[]).filter((_,i)=>i!==+btn.dataset.delPenalty);saveAll();render()}});
@@ -2212,6 +2260,17 @@ function bindEvents(){
         }else{obj.amount=+$('modal-amount').value;if(!(obj.amount>0)){showToast('اكتب المبلغ','error');return}}
         if(mm.type==='add-bonus'){if(!bonuses[mk])bonuses[mk]=[];bonuses[mk].push(obj)}else{if(!penalties[mk])penalties[mk]=[];penalties[mk].push(obj)}
         saveAll();state.modal=null;render();showToast(`تم الحفظ ✓ — ${fmtNum(obj.amount,2)} ج.م`);
+      });
+    } else if(mm.type==='add-badge'){
+      const $=id=>document.getElementById(id);let k=BADGES[0].k;
+      document.querySelectorAll('.badge-pick').forEach(b=>b.onclick=()=>{k=b.dataset.k;document.querySelectorAll('.badge-pick').forEach(x=>{x.style.borderColor='var(--border)';x.style.background='#fff'});b.style.borderColor='var(--accent)';b.style.background='var(--bg3)';$('badge-custom').style.display=k==='custom'?'':'none';if(k==='custom')$('badge-custom').focus()});
+      $('modal-save')?.addEventListener('click',()=>{
+        const mk=monthKey(),empId=$('modal-emp').value,obj={id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),empId,k,note:$('badge-note').value.trim(),by:state.user.name,at:new Date().toISOString()};
+        if(k==='custom'){obj.name=$('badge-custom').value.trim();if(!obj.name){showToast('اكتب اسم الوسام','error');return}}
+        if(!empId){showToast('اختر الموظف','error');return}
+        if(!monthlyData[mk])monthlyData[mk]={sales:0,gp:0,np:0,hours:{},empSales:{}};
+        (monthlyData[mk].badges||(monthlyData[mk].badges=[])).push(obj);
+        saveAll();state.modal=null;render();showToast(`تم منح وسام «${badgeOf(obj).name}» ✓`);
       });
     } else if(mm.type==='add-mission'){
       document.getElementById('modal-save')?.addEventListener('click',()=>{
