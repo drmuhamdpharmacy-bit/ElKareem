@@ -467,7 +467,7 @@ async function loadAttDays(b=state.branch,year=state.year){
 }
 async function ensureAtt(force){
   if(!state.user||isKiosk())return;
-  const bs=isStaff()?Object.keys(branchData):[state.user.branch];
+  const bs=isStaff()?Object.keys(branchData):[state.user.branch,...Object.keys(myOtherViews||{})];
   await Promise.all(bs.filter(b=>force||!attDays[`${b}|${state.year}`]).map(b=>loadAttDays(b,state.year).catch(e=>console.warn('attendance',e))));
 }
 function attRowsFor(b,mk){
@@ -553,7 +553,8 @@ let employees,kpiWeights,monthlyData,attendance,missions,messages,bonuses,penalt
 let branches=[];                       // [{id,name,lat,lng,radius,grace}]
 let branchData={};                     // {b1:{employees,…}, b2:{…}} — branches this user may see
 let users=[];                          // login accounts — loaded for the owner only
-let myView=null,leaderboardView=null;  // what a regular employee is allowed to see
+let myView=null,leaderboardView=null,myOtherViews={};  // myOtherViews: {branch: snapshot} for an employee who also works in other branches
+let _inOtherView=false;  // what a regular employee is allowed to see
 let _pendingImg=null,_realtimeSub=null;
 let _synced={},_viewSynced={},_branchesSynced=null;
 let cache={};                          // on-demand lists: check-ins, leave requests, change history
@@ -583,7 +584,7 @@ function withBranch(b,fn){const cur=state.branch;if(b===cur)return fn();useBranc
 function resetData(){
   branches=[];branchData={};state.branch=null;state.checkin=null;cache={};attDays={};_attMemo={};
   const d=freshBranchData();STORE_KEYS.forEach(k=>storeSet(k,d[k]));
-  users=[];myView=null;leaderboardView=null;_synced={};_viewSynced={};_branchesSynced=null;
+  users=[];myView=null;leaderboardView=null;myOtherViews={};_synced={};_viewSynced={};_branchesSynced=null;
 }
 function normalize(){
   if(!Array.isArray(employeesAll))employeesAll=[];
@@ -645,7 +646,14 @@ async function loadEmpData(){
   if(error)throw error;
   myView=null;leaderboardView=null;
   data.forEach(r=>{if(r.emp_id.startsWith('_lb/'))leaderboardView=r.data;else myView=r.data});
+  // other branches this employee also works in (rows '<code>@<branch>')
+  const others={};
+  if(state.user.empId){const r=await sb.from('emp_view').select('emp_id,data').like('emp_id',state.user.empId+'@%');
+    if(!r.error)(r.data||[]).forEach(x=>{const b=x.emp_id.slice(x.emp_id.indexOf('@')+1);if(x.data&&x.data.emp&&b!==state.user.branch)others[b]=x.data})}
+  myOtherViews=others;
 }
+// Render something with another branch's snapshot as if it were the employee's own (two-branch employees).
+function withEmpView(v,fn){const mv=myView,br=state.branch,io=_inOtherView;myView=v;state.branch=v.emp.branch;_inOtherView=true;try{return fn()}finally{myView=mv;state.branch=br;_inOtherView=io}}
 
 // ══════════════════════════════════════════════
 //  CLOUD DATA — SAVE (owner / supervisor)
@@ -702,7 +710,7 @@ async function publishEmpViews(){
   try{
     for(const b of Object.keys(branchData)){
       useBranch(b);
-      employees.forEach(e=>add(e.id,b,buildEmpView(e.id)));
+      employees.forEach(e=>add(e.home?`${e.id}@${b}`:e.id,b,buildEmpView(e.id))); // a second-branch record gets its own row
       add('_lb/'+b,b,buildLeaderboard());
     }
   }finally{useBranch(cur)}
@@ -725,8 +733,8 @@ function empStats(empId,mk){
   return{...s,hrs,sal,pt,net:sal+(s.comm||0)+(s.bt||0)-pt-(s.wd||0),auto:true,forgotPen:fp,
     att:{total:a.days,onTime:a.days-a.late,late:a.late,lateHours:Math.floor(a.lateMin/60),lateMinutes:a.lateMin%60,auto:true,forgot:a.forgot+a.fixed,open:a.open}};
 }
-function empMissions(empId,mk){return isStaff()?(missions[mk]||[]).filter(m=>m.empId===empId):((myView?.missions||{})[mk]||[])}
-function empMessages(empId){return isStaff()?messages.filter(m=>m.to===empId):(myView?.messages||[])}
+function empMissions(empId,mk){if(isStaff())return(missions[mk]||[]).filter(m=>m.empId===empId);const own=(myView?.missions||{})[mk]||[];return _inOtherView?own:own.concat(...Object.values(myOtherViews||{}).map(v=>(v.missions||{})[mk]||[]))}
+function empMessages(empId){if(isStaff())return messages.filter(m=>m.to===empId);const own=myView?.messages||[];return _inOtherView?own:own.concat(...Object.values(myOtherViews||{}).map(v=>v.messages||[]))}
 function rankedFor(mk){
   const list=isStaff()?employees.map(e=>({id:e.id,name:e.name,role:e.role,kpi:getKPI(e.id,mk)})):[...((leaderboardView||{})[mk]||[])];
   return list.sort((a,b)=>b.kpi-a.kpi);
@@ -1137,11 +1145,19 @@ function renderCommission(){
   </div>`;
 }
 
+// «يعمل أيضاً في»: the same person (same code and login) on another branch's staff list, with that branch's own rate and commission
+function empBranchesBox(e){
+  if(e.home)return`<div class="card-sm" style="margin-bottom:12px;border-color:var(--accent);background:var(--bg3);font-size:13px;line-height:1.8">🏢 الفرع الأساسي: <strong>${esc(branchName(e.home))}</strong><br>سعر الساعة والعمولة هنا خاصة بفرع <strong>${esc(branchName(state.branch))}</strong> فقط. حضوره هنا يُحسب عندما يمسح كود هذا الفرع.</div>`;
+  const others=isOwner()?Object.keys(branchData).filter(b=>b!==state.branch):[];if(!others.length)return'';
+  return`<div class="form-group" style="background:var(--bg3);border-radius:10px;padding:10px 12px"><label style="margin-bottom:6px">🏢 يعمل أيضاً في</label>
+    ${others.map(b=>{const c=(branchData[b].employees||[]).find(x=>x.id===e.id&&!x.leftMk);return`<label style="display:flex;align-items:center;gap:8px;margin:4px 0;font-weight:700;color:var(--text)"><input type="checkbox" class="emp-also" value="${esc(b)}"${c?' checked':''} style="width:auto;margin:0"> ${esc(branchName(b))}${c?` <span style="font-size:11px;color:var(--text2);font-weight:400">(سعر الساعة ${fmtNum(+c.hourRate||0)} · العمولة ${+c.commPct||0}%)</span>`:''}</label>`}).join('')}
+    <div style="font-size:11px;color:var(--text2);margin-top:6px;line-height:1.7">نفس الكود ونفس حساب الدخول. بعد الحفظ اختر الفرع الآخر من أعلى الصفحة ← إدارة الموظفين لتعديل سعر الساعة والعمولة هناك (مثلاً العمولة 0%). الحضور يُحسب في الفرع الذي يمسح كوده.</div></div>`;
+}
 function renderEmployees(){
   const act=employeesAll.filter(e=>!e.leftMk),former=formerEmployees();
   return`<div class="section-header"><span style="font-size:13px;color:var(--text2)">${act.length} موظف</span><button class="btn btn-primary" id="add-emp-btn">+ إضافة موظف</button></div>
   <div class="table-wrap card"><table><thead><tr><th>الكود</th><th>الاسم</th><th>الدور</th><th>الوردية</th><th>سعر الساعة</th><th>العمولة</th><th>الحضور</th><th>إجراءات</th></tr></thead>
-  <tbody>${act.map(e=>`<tr><td><span class="badge badge-gray">${e.id}</span></td><td style="font-weight:800">${esc(e.name)}</td><td style="color:var(--text2);font-size:12px">${e.role}</td><td><span class="badge badge-blue">${e.shift}</span></td><td style="color:var(--gold2);font-weight:700">${fmtNum(e.hourRate)} ج.م</td><td>${e.commPct>0?`<span class="badge badge-green">${e.commPct}%</span>`:`<span class="badge badge-gray">${e.fixedBonus?fmtNum(e.fixedBonus)+' ج.م':'—'}</span>`}</td><td dir="ltr" style="font-size:12px;color:var(--text2)">${e.scheduledTime}</td><td style="white-space:nowrap"><button class="btn btn-ghost btn-xs" data-edit-emp="${e.id}">✏️ تعديل</button> <button class="btn btn-danger btn-xs" data-remove-emp="${esc(e.id)}" title="إنهاء الخدمة / حذف">🗑</button></td></tr>`).join('')}</tbody></table></div>
+  <tbody>${act.map(e=>`<tr><td><span class="badge badge-gray">${e.id}</span></td><td style="font-weight:800">${esc(e.name)}${e.home?` <span class="badge badge-blue" title="الفرع الأساسي">🏢 ${esc(branchName(e.home))}</span>`:(()=>{const bs=Object.keys(branchData).filter(b=>b!==state.branch&&(branchData[b].employees||[]).some(x=>x.id===e.id&&!x.leftMk));return bs.length?` <span class="badge badge-green">+ ${bs.map(b=>esc(branchName(b))).join('، ')}</span>`:''})()}</td><td style="color:var(--text2);font-size:12px">${e.role}</td><td><span class="badge badge-blue">${e.shift}</span></td><td style="color:var(--gold2);font-weight:700">${fmtNum(e.hourRate)} ج.م</td><td>${e.commPct>0?`<span class="badge badge-green">${e.commPct}%</span>`:`<span class="badge badge-gray">${e.fixedBonus?fmtNum(e.fixedBonus)+' ج.م':'—'}</span>`}</td><td dir="ltr" style="font-size:12px;color:var(--text2)">${e.scheduledTime}</td><td style="white-space:nowrap"><button class="btn btn-ghost btn-xs" data-edit-emp="${e.id}">✏️ تعديل</button> <button class="btn btn-danger btn-xs" data-remove-emp="${esc(e.id)}" title="إنهاء الخدمة / حذف">🗑</button></td></tr>`).join('')}</tbody></table></div>
   ${former.length?`<div class="card" style="margin-top:16px"><h3 style="margin-bottom:6px">📦 موظفون سابقون</h3><p style="color:var(--text2);font-size:12px;margin-bottom:12px">بياناتهم القديمة محفوظة وتظهر عند اختيار الشهور التي عملوا فيها.</p>
     <div class="table-wrap"><table><thead><tr><th>الكود</th><th>الاسم</th><th>الدور</th><th>آخر شهر عمل</th><th>إجراءات</th></tr></thead><tbody>${former.map(e=>{const[y,m]=e.leftMk.split('-').map(Number);return`<tr><td><span class="badge badge-gray">${esc(e.id)}</span></td><td style="font-weight:700">${esc(e.name)}</td><td style="font-size:12px;color:var(--text2)">${esc(e.role)}</td><td>${MONTHS_AR[m]} ${y}</td><td style="white-space:nowrap"><button class="btn btn-success btn-xs" data-restore-emp="${esc(e.id)}">↩️ إرجاع</button> <button class="btn btn-danger btn-xs" data-purge-emp="${esc(e.id)}">🗑 حذف نهائي</button></td></tr>`}).join('')}</tbody></table></div></div>`:''}`;
 }
@@ -1335,7 +1351,17 @@ function renderMyPerformance(){
   return renderMyPerfFor(empId);
 }
 function renderMyPerfFor(empId){
-  const emp=empRecord(empId);if(!emp)return`<div class="card" style="text-align:center;color:var(--text3);padding:40px">لا توجد بيانات بعد — ستظهر بمجرد أن يحفظ المالك بيانات الشهر</div>`+CRM.perfCard(empId);
+  const others=!isStaff()&&!_inOtherView&&empId===state.user?.empId?Object.values(myOtherViews||{}).filter(v=>v&&v.emp):[];
+  if(!others.length)return renderMyPerfOne(empId);
+  const mk=monthKey(),parts=[{v:myView,html:renderMyPerfOne(empId,true),net:(empStats(empId,mk)||{}).net||0}];
+  others.forEach(v=>withEmpView(v,()=>parts.push({v,html:renderMyPerfOne(empId,true),net:(empStats(empId,mk)||{}).net||0})));
+  const total=parts.reduce((t,p)=>t+p.net,0);
+  return`<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,#ecfdf5,#eff6ff);border:1px solid #a7f3d0"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><div style="font-weight:800;font-size:15px">💰 إجمالي راتبك من ${parts.length===2?'الفرعين':parts.length+' فروع'} — ${MONTHS_AR[state.month]}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${parts.map(p=>`${esc(p.v.emp.branchName||branchName(p.v.emp.branch))}: ${fmtNum(p.net,2)} ج.م`).join(' &nbsp;+&nbsp; ')}</div></div><div style="font-size:26px;font-weight:800;color:var(--gold2)">${fmtNum(total,2)} <span style="font-size:13px">ج.م</span></div></div></div>`
+    +parts.map(p=>`<div style="display:flex;align-items:center;gap:8px;margin:22px 0 10px"><span style="font-size:18px">🏢</span><h3 style="margin:0">${esc(p.v.emp.branchName||branchName(p.v.emp.branch))}</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>${p.html}`).join('')
+    +CRM.perfCard(empId);
+}
+function renderMyPerfOne(empId,noCrm){
+  const emp=empRecord(empId);if(!emp)return`<div class="card" style="text-align:center;color:var(--text3);padding:40px">لا توجد بيانات بعد — ستظهر بمجرد أن يحفظ المالك بيانات الشهر</div>`+(noCrm?'':CRM.perfCard(empId));
   const mk=monthKey(),st=empStats(empId,mk),{hrs,sal,comm,bt,pt,net,att,empSales}=st,kpiScore=st.kpi,wd=st.wd||0,wdList=st.wdList||[];
   return`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px;display:flex;align-items:center;gap:14px">
     <div style="width:50px;height:50px;border-radius:50%;color:#fff;background:linear-gradient(135deg,var(--accent),var(--brand));display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800">${esc(emp.name.charAt(0))}</div>
@@ -1351,7 +1377,7 @@ function renderMyPerfFor(empId){
   <div class="grid-2"><div class="card"><h3 style="margin-bottom:16px">📊 درجة KPI</h3><div style="text-align:center;padding:16px"><div style="font-size:64px;font-weight:800;color:${kpiColor(kpiScore)}">${kpiScore}</div><div style="font-size:16px;color:var(--text2);margin-top:4px">${kpiLabel(kpiScore)}</div><div class="kpi-bar" style="margin-top:16px"><div class="kpi-fill" style="width:${kpiScore}%;background:${kpiColor(kpiScore)}"></div></div></div></div>
   <div class="card"><h3 style="margin-bottom:14px">📋 ملخص الأداء</h3>${[['سعر الساعة',fmtNum(+emp.hourRate||0)],['الراتب الأساسي',fmtNum(sal,2)+' ج.م'],['العمولة'+(st.commOff?'':' ('+emp.commPct+'%)'),st.commOff?'متوقفة لهذا الفرع':fmtNum(comm,2)+' ج.م'],...(empSales>0?[['مبيعاتك الشخصية',fmtNum(empSales)+' ج.م'],...(st.salesPct>0?[['نسبتك من إجمالي المبيعات',fmtNum(st.salesPct,1)+'%']]:[])]:[]),['ساعات العمل'+(st.auto?' (تلقائي)':''),fmtNum(hrs,2)+' ساعة'],['أيام الحضور',(att.total||0)+' يوم'],['أيام في الموعد',att.onTime+' يوم'],['أيام متأخر',att.late+' يوم'],['إجمالي التأخير',`${att.lateHours}س ${att.lateMinutes}د`],...(st.auto?[['نسيان الانصراف',`${st.forgotPen?.count||0} مرة (المسموح ${branchCfg().free_forgets})`]]:[]),['المكافآت',sgn(bt,'+')+' ج.م'],['الجزاءات',penShow(pt,st.ptDays,st.ptDayAmt)],['المسحوبات',sgn(wd,'-',2)+' ج.م'],['صافي الراتب',fmtNum(net,2)+' ج.م']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="font-weight:700">${v}</span></div>`).join('')}</div></div>
   ${myBadgesCard(empId,st.badges||[])}
-  ${wdList.length?`<div class="card" style="margin-top:16px"><div class="section-header"><h3>🛒 المسحوبات — ${MONTHS_AR[state.month]}</h3><span class="badge badge-red">\u200E-${fmtNum(wd,2)} ج.م</span></div><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>المبلغ</th><th>ملاحظة</th></tr></thead><tbody>${[...wdList].sort((x,y)=>x.date<y.date?-1:1).map(x=>`<tr><td style="white-space:nowrap">${esc(x.date)}</td><td>${esc(x.type)}</td><td style="color:var(--danger);font-weight:700">${fmtNum(x.amount,2)} ج.م</td><td style="font-size:12px;color:var(--text2)">${esc(x.note||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}`+CRM.perfCard(empId);
+  ${wdList.length?`<div class="card" style="margin-top:16px"><div class="section-header"><h3>🛒 المسحوبات — ${MONTHS_AR[state.month]}</h3><span class="badge badge-red">\u200E-${fmtNum(wd,2)} ج.م</span></div><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>النوع</th><th>المبلغ</th><th>ملاحظة</th></tr></thead><tbody>${[...wdList].sort((x,y)=>x.date<y.date?-1:1).map(x=>`<tr><td style="white-space:nowrap">${esc(x.date)}</td><td>${esc(x.type)}</td><td style="color:var(--danger);font-weight:700">${fmtNum(x.amount,2)} ج.م</td><td style="font-size:12px;color:var(--text2)">${esc(x.note||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}`+(noCrm?'':CRM.perfCard(empId));
 }
 function allBadgeCount(empId){
   if(isStaff())return Object.values(monthlyData||{}).reduce((t,d)=>t+((d&&d.badges)||[]).filter(x=>x.empId===empId).length,0);
@@ -1615,7 +1641,7 @@ function renderMyCheckin(){
   else if(c?.status==='choose')top=`<div class="card checkin-result" style="border:2px solid var(--warn);background:#fffbeb"><div style="font-size:46px">🤔</div><div style="font-size:19px;font-weight:800;margin-top:6px">أنت مسجل حضور منذ الساعة <span dir="ltr">${esc(c.since)}</span></div><p style="color:var(--text2);margin-top:6px">اختر ما يناسبك الآن:</p>
     <div style="display:flex;flex-direction:column;gap:10px;max-width:420px;margin:14px auto 0"><button class="btn btn-primary" data-ck-kind="out" style="justify-content:center;font-size:16px;padding:14px">👋 انصراف — أنهيت ورديتي الطويلة</button><button class="btn btn-success" data-ck-kind="in" style="justify-content:center;font-size:16px;padding:14px">✅ حضور جديد — نسيت تسجيل الانصراف السابق</button></div></div>`;
   else if(c?.status==='ok'){const dur=c.since?Math.round((new Date(c.at)-new Date(c.since))/60000):0;
-    top=`<div class="card checkin-result" style="border:2px solid var(--success);background:#f0fdf4"><div style="font-size:56px">${c.kind==='in'?'✅':'👋'}</div><div style="font-size:24px;font-weight:800;color:var(--success);margin-top:6px">${c.kind==='in'?'تم تسجيل الحضور':'تم تسجيل الانصراف'}</div><div style="font-size:34px;font-weight:800;margin-top:6px" dir="ltr">${fmtTime(c.at)}</div>${dur?`<div style="font-size:15px;margin-top:6px">مدة الوردية: <strong>${fmtMins(dur)}</strong></div>`:''}<div style="color:var(--text2);margin-top:4px">${esc(c.name||'')}</div></div>`}
+    top=`<div class="card checkin-result" style="border:2px solid var(--success);background:#f0fdf4"><div style="font-size:56px">${c.kind==='in'?'✅':'👋'}</div><div style="font-size:24px;font-weight:800;color:var(--success);margin-top:6px">${c.kind==='in'?'تم تسجيل الحضور':'تم تسجيل الانصراف'}</div><div style="font-size:34px;font-weight:800;margin-top:6px" dir="ltr">${fmtTime(c.at)}</div>${dur?`<div style="font-size:15px;margin-top:6px">مدة الوردية: <strong>${fmtMins(dur)}</strong></div>`:''}<div style="color:var(--text2);margin-top:4px">${esc(c.name||'')}${c.branch_name&&Object.keys(myOtherViews||{}).length?' — '+esc(c.branch_name):''}</div>${c.closed_branch?`<div style="margin-top:8px;font-size:13px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px">تم تسجيل انصرافك تلقائياً من ${esc(c.closed_branch)}</div>`:''}</div>`}
   else if(c?.status==='error')top=`<div class="card checkin-result" style="border:2px solid var(--danger);background:#fef2f2"><div style="font-size:48px">⚠️</div><div style="font-size:17px;font-weight:800;color:var(--danger);margin-top:8px;line-height:1.7">${esc(c.msg)}</div></div>`;
   const mk=monthKey(),empId=state.user.empId,me=empRecord(empId)||{},a=autoAtt(empId,mk,state.branch,me);
   const loaded=!!attDays[`${state.branch}|${state.year}`];
@@ -1887,21 +1913,21 @@ function renderModal(){
     content=`<div class="modal-header"><h3>✉️ إرسال رسالة</h3><button class="modal-close" id="modal-cancel">✕</button></div><div class="form-group"><label>إلى</label><select id="modal-emp"><option value="all">جميع الموظفين</option>${employees.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}</select></div><div class="form-group"><label>نوع الرسالة</label><select id="modal-type"><option>إطراء وتحفيز</option><option>تحذير أو توجيه</option><option>معلومات عامة</option><option>هدف أو مهمة</option></select></div><div class="form-group"><label>نص الرسالة</label><textarea id="modal-body" rows="4"></textarea></div><div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">إرسال</button></div>`;
   } else if(m.type==='edit-emp'){
     const e=m.emp;
-    content=`<div class="modal-header"><h3>✏️ تعديل بيانات الموظف</h3><button class="modal-close" id="modal-cancel">✕</button></div><div class="form-row"><div class="form-group"><label>الاسم</label><input id="emp-name" value="${esc(e.name)}"></div><div class="form-group"><label>الدور</label><input id="emp-role" value="${esc(e.role)}"></div></div><div class="form-row"><div class="form-group"><label>سعر الساعة (ج.م)</label><input type="number" id="emp-hourrate" value="${e.hourRate}"></div><div class="form-group"><label>العمولة %</label><input type="number" id="emp-commpct" value="${e.commPct}" step="0.5"></div></div><div class="form-row"><div class="form-group"><label>الوردية</label><input id="emp-shift" value="${esc(e.shift)}"></div><div class="form-group"><label>وقت الحضور المقرر</label><input type="time" id="emp-schedtime" value="${esc(e.scheduledTime)}"></div></div><div class="form-row"><div class="form-group"><label>مكافأة ثابتة (ج.م)</label><input type="number" id="emp-fixedbonus" value="${e.fixedBonus||0}"></div><div class="form-group"><label>اسم المكافأة</label><input id="emp-bonusname" value="${esc(e.bonusName||'')}"></div></div><div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save-emp" data-id="${e.id}">💾 حفظ</button></div>`;
+    content=`<div class="modal-header"><h3>✏️ تعديل بيانات الموظف</h3><button class="modal-close" id="modal-cancel">✕</button></div><div class="form-row"><div class="form-group"><label>الاسم</label><input id="emp-name" value="${esc(e.name)}"></div><div class="form-group"><label>الدور</label><input id="emp-role" value="${esc(e.role)}"></div></div><div class="form-row"><div class="form-group"><label>سعر الساعة (ج.م)</label><input type="number" id="emp-hourrate" value="${e.hourRate}"></div><div class="form-group"><label>العمولة %</label><input type="number" id="emp-commpct" value="${e.commPct}" step="0.5"></div></div><div class="form-row"><div class="form-group"><label>الوردية</label><input id="emp-shift" value="${esc(e.shift)}"></div><div class="form-group"><label>وقت الحضور المقرر</label><input type="time" id="emp-schedtime" value="${esc(e.scheduledTime)}"></div></div><div class="form-row"><div class="form-group"><label>مكافأة ثابتة (ج.م)</label><input type="number" id="emp-fixedbonus" value="${e.fixedBonus||0}"></div><div class="form-group"><label>اسم المكافأة</label><input id="emp-bonusname" value="${esc(e.bonusName||'')}"></div></div>${empBranchesBox(e)}<div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save-emp" data-id="${e.id}">💾 حفظ</button></div>`;
   } else if(m.type==='edit-user'||m.type==='add-user'){
     const isNew=m.type==='add-user',u=isNew?(m.user||{username:'',name:'',role:'employee',empId:''}):m.user,self=!isNew&&u.id===state.user.id;
     content=`<div class="modal-header"><h3>${isNew?'➕ مستخدم جديد':'✏️ تعديل المستخدم'}</h3><button class="modal-close" id="modal-cancel">✕</button></div>
       <div class="form-row"><div class="form-group"><label>الاسم المعروض</label><input id="user-display-name" value="${esc(u.name)}"></div><div class="form-group"><label>اسم المستخدم (إنجليزي)</label><input id="user-username" dir="ltr" value="${esc(u.username)}" placeholder="ahmed"></div></div>
       <div class="form-row"><div class="form-group"><label>الدور</label><select id="user-role" ${self?'disabled':''}>${[['employee','موظف'],['senior','مشرف'],['owner','مالك'],['kiosk','شاشة حضور']].map(([v,l])=>`<option value="${v}"${u.role===v?' selected':''}>${l}</option>`).join('')}</select></div>
       <div class="form-group"><label>الفرع</label><select id="user-branch">${branches.map(b=>`<option value="${esc(b.id)}"${(u.branch||(isNew?state.branch:''))===b.id?' selected':''}>${esc(b.name)}</option>`).join('')}</select></div></div>
-      <div class="form-group"><label>الموظف المرتبط</label><select id="user-emp"><option value="">— لا يوجد —</option>${Object.keys(branchData).map(b=>`<optgroup label="${esc(branchName(b))}">${(b===state.branch?employees:branchData[b].employees||[]).map(e=>`<option value="${esc(e.id)}" data-branch="${esc(b)}"${u.empId===e.id?' selected':''}>${esc(e.name)}</option>`).join('')}</optgroup>`).join('')}</select></div>
+      <div class="form-group"><label>الموظف المرتبط</label><select id="user-emp"><option value="">— لا يوجد —</option>${Object.keys(branchData).map(b=>`<optgroup label="${esc(branchName(b))}">${(b===state.branch?employees:branchData[b].employees||[]).filter(e=>!e.home).map(e=>`<option value="${esc(e.id)}" data-branch="${esc(b)}"${u.empId===e.id?' selected':''}>${esc(e.name)}</option>`).join('')}</optgroup>`).join('')}</select></div>
       <hr style="border-color:var(--border);margin:12px 0">
       <p style="color:var(--text2);font-size:12px;margin-bottom:10px">${isNew?'كلمة مرور مؤقتة — أعطها للموظف ويمكنه تغييرها من صفحة «كلمة المرور»':'اترك كلمة المرور فارغة لعدم التغيير'}</p>
       <div class="form-row"><div class="form-group"><label>${isNew?'كلمة المرور':'كلمة مرور جديدة'}</label><input type="text" id="user-newpass" dir="ltr" value="${isNew?genPassword():''}" autocomplete="off"></div><div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-ghost btn-sm" id="gen-pass-btn" type="button">🎲 توليد كلمة مرور</button></div></div>
       <p id="user-edit-err" style="color:var(--danger);font-size:12px;margin-bottom:8px"></p>
       <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save-user">💾 ${isNew?'إنشاء الحساب':'حفظ'}</button></div>`;
   } else if(m.type==='remove-emp'){
-    const e=employeesAll.find(x=>x.id===m.empId)||{},acc=users.filter(u=>u.empId===e.id);
+    const e=employeesAll.find(x=>x.id===m.empId)||{},acc=e.home?[]:users.filter(u=>u.empId===e.id); // a second-branch record shares the login of its main branch: never delete it from here
     content=`<div class="modal-header"><h3>🗑 ${esc(e.name)}</h3><button class="modal-close" id="modal-cancel">✕</button></div>
       <div class="card-sm" style="margin-bottom:14px;border-color:var(--brand)"><div style="font-weight:800;margin-bottom:6px">📦 إنهاء الخدمة <span class="badge badge-green">موصى به</span></div>
         <p style="font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:10px">يختفي من الشهور التالية، وتبقى رواتبه وحضوره وكشوفه في الشهور السابقة محفوظة. يمكن إرجاعه لاحقاً.</p>
@@ -1975,9 +2001,9 @@ function bindEvents(){
   const purgeEmp=async empId=>{
     const e=employeesAll.find(x=>x.id===empId);if(!e)return;
     if(!confirm(`حذف «${e.name}» نهائياً من كل الشهور؟ لا يمكن التراجع.`))return;
-    try{if(isOwner())await dropAccounts(empId)}catch(err){showToast(errMsg(err),'error');return}
+    try{if(isOwner()&&!e.home)await dropAccounts(empId)}catch(err){showToast(errMsg(err),'error');return}
     employeesAll=employeesAll.filter(x=>x.id!==empId);refreshEmpView();
-    sb.from('emp_view').delete().eq('emp_id',empId).then(()=>{});delete _viewSynced[empId];
+    const vid=e.home?`${empId}@${state.branch}`:empId;sb.from('emp_view').delete().eq('emp_id',vid).then(()=>{});delete _viewSynced[vid];
     state.modal=null;saveAll();render();showToast('تم الحذف النهائي');
   };
   document.querySelectorAll('[data-remove-emp]').forEach(b=>{b.onclick=()=>{state.modal={type:'remove-emp',empId:b.dataset.removeEmp};render()}});
@@ -2316,7 +2342,13 @@ function bindEvents(){
       document.getElementById('modal-save-emp')?.addEventListener('click',()=>{
         const emp=employees.find(e=>e.id===mm.emp.id);
         emp.name=document.getElementById('emp-name').value;emp.role=document.getElementById('emp-role').value;emp.hourRate=+document.getElementById('emp-hourrate').value;emp.commPct=+document.getElementById('emp-commpct').value;emp.shift=document.getElementById('emp-shift').value;emp.scheduledTime=document.getElementById('emp-schedtime').value;emp.fixedBonus=+document.getElementById('emp-fixedbonus').value||0;emp.bonusName=document.getElementById('emp-bonusname').value;
-        saveAll();state.modal=null;render();showToast('تم حفظ بيانات الموظف ✓');
+        const added=[],removed=[];
+        document.querySelectorAll('.emp-also').forEach(cb=>{const b=cb.value,d=branchData[b];if(!d)return;const list=d.employees||(d.employees=[]);const c=list.find(x=>x.id===emp.id);
+          if(cb.checked){if(!c){list.push({...clone(emp),home:state.branch,fixedBonus:0,bonusName:''});added.push(b)}else if(c.leftMk||c.home!==state.branch){delete c.leftMk;c.home=state.branch;added.push(b)}}
+          else if(c&&!c.leftMk&&c.home===state.branch){c.leftMk=monthKey();removed.push(b)}});
+        Object.keys(branchData).forEach(b=>{if(b!==state.branch)(branchData[b].employees||[]).forEach(x=>{if(x.id===emp.id&&x.home===state.branch){x.name=emp.name;x.role=emp.role}})});
+        saveAll();state.modal=null;render();
+        showToast('تم حفظ بيانات الموظف ✓'+(added.length?` — أُضيف إلى ${added.map(branchName).join('، ')} (عدّل سعر الساعة والعمولة من ذلك الفرع)`:'')+(removed.length?` — أُزيل من ${removed.map(branchName).join('، ')} بعد هذا الشهر`:''));
       });
     } else if(mm.type==='edit-user'||mm.type==='add-user'){
       document.getElementById('gen-pass-btn')?.addEventListener('click',()=>{document.getElementById('user-newpass').value=genPassword()});
