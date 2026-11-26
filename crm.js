@@ -181,7 +181,7 @@ const CRM = (() => {
       </div>
       <div class="crm-tabs">${scopes.map(([k, l]) => `<button class="crm-tab${f.scope === k ? ' on' : ''}" data-crm-scope="${k}">${l}</button>`).join('')}</div>
       <div class="crm-bar">
-        <input class="grow" id="crm-fu-q" placeholder="🔍 بحث باسم العميل أو رقم الهاتف…" value="${esc(f.q)}">
+        <input class="grow" id="crm-fu-q" placeholder="🔍 بحث باسم العميل أو رقم الهاتف…" value="${esc(qVal('crm-fu-q', f.q))}">
         ${state.user.role === 'owner' ? `<select id="crm-fu-branch">${branchOpts(f.branch, 'كل الفروع')}</select>` : ''}
         ${sel('crm-fu-type', [['', 'كل الأنواع'], ...Object.entries(CARE).map(([k, c]) => [k, c.label])], f.type)}
         ${isStaffU() ? sel('crm-fu-emp', [['', 'كل الموظفين'], ...staffList().map(e => [e.id, e.name])], f.emp)
@@ -225,7 +225,7 @@ const CRM = (() => {
                      ['vip', '⭐ VIP'], ['overdue', '⏰ متابعات متأخرة'], ['no_plan', 'بدون خطة متابعة'], ...(isStaffU() ? [['archived', '🗄️ الأرشيف']] : [])];
     return `
       <div class="crm-bar">
-        <input class="grow" id="crm-cust-q" placeholder="🔍 ابحث بالاسم أو جزء منه، رقم الهاتف، أو رقم العميل…" value="${esc(c.q)}">
+        <input class="grow" id="crm-cust-q" placeholder="🔍 ابحث بالاسم أو جزء منه، رقم الهاتف، أو رقم العميل…" value="${esc(qVal('crm-cust-q', c.q))}">
         <select id="crm-cust-branch">${branchOpts(c.branch, 'كل الفروع')}</select>
         <button class="btn btn-primary" id="crm-cust-new">+ عميل جديد</button>
       </div>
@@ -535,10 +535,21 @@ const CRM = (() => {
 
   // ---------------------------------------------------------------- events
   let _deb = null;
+  // What the user actually typed (spaces included) and where the cursor was. The page is re-drawn
+  // while they type (search results arrive), so the box is rebuilt from this, not from the trimmed
+  // search term — otherwise the space between two words disappears («أحمد محمود» → «أحمدمحمود»).
+  const _raw = {}, _sel = {};
+  function qVal(id, q) { const r = _raw[id]; return r != null && r.trim() === (q || '') ? r : (q || ''); }
   function onSearch(id, setter) {
     const el = document.getElementById(id); if (!el) return;
+    let composing = false;   // phone keyboards (Arabic prediction): wait until the word is finished
+    const keep = () => { S.focus = id; _raw[id] = el.value; _sel[id] = [el.selectionStart, el.selectionEnd]; };
+    const fire = () => { keep(); clearTimeout(_deb); _deb = setTimeout(() => { if (composing) return; setter(el.value.trim()); render(); }, 450); };
     el.onfocus = () => { S.focus = id; };
-    el.oninput = () => { S.focus = id; clearTimeout(_deb); _deb = setTimeout(() => { setter(el.value.trim()); render(); }, 350); };
+    el.addEventListener('compositionstart', () => { composing = true; });
+    el.addEventListener('compositionend', () => { composing = false; fire(); });
+    el.oninput = fire;
+    el.onkeyup = el.onclick = keep;
   }
   // the page is re-drawn when results arrive: keep typing in the same box until the user clicks elsewhere
   document.addEventListener('mousedown', e => { if (S.focus && e.target?.id !== S.focus) S.focus = null; }, true);
@@ -635,7 +646,7 @@ const CRM = (() => {
     document.getElementById('crm-imp-go')?.addEventListener('click', runImport);
     document.getElementById('crm-assign-go')?.addEventListener('click', () => act(() => rpc('crm_assign_unassigned', {p_branch: v('crm-assign-branch')}), 'تم ربط العملاء بالفرع ✓'));
     // restore the cursor in the search box after a re-render
-    if (S.focus && !state.modal) { const el = document.getElementById(S.focus); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+    if (S.focus && !state.modal) { const el = document.getElementById(S.focus); if (el) { el.focus(); const [a, b] = _sel[S.focus] || [el.value.length, el.value.length]; try { el.setSelectionRange(Math.min(a, el.value.length), Math.min(b, el.value.length)); } catch {} } }
     bindModal();
   }
 
