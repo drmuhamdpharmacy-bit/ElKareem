@@ -504,11 +504,15 @@ const FIN = (() => {
     ['inventory_end_qty', 'inventoryEndQty', 'كمية المخزون', 'Qty at end'], ['notes', 'notes', 'ملاحظات', 'Notes', 2],
   ];
   function tabInputs(d, b) {
-    const link = d.links[b.branchId], ob = b.dataset.opening || {}, lockedOb = closed(d, b.branchId, 1);
+    const link = d.links[b.branchId], ob = b.dataset.opening || {}, lockedOb = closed(d, b.branchId, 1), from = d.fy.app_payroll_from_month;
     const rowsH = b.monthly.map((m, i) => {
       const lk = closed(d, b.branchId, i + 1), app = link?.[i];
       return `<tr><td class="lbl">${MN()[i]}</td><td class="n" style="color:var(--text3)">${b.calendar[i].days}</td>
-        ${INPUT_COLS.map(([col, prop, , , t]) => `<td><input class="fin-cell${t === 2 ? '' : ' n'}" ${lk ? 'disabled' : ''} data-fin-in="${i + 1}|${col}" value="${esc(m?.[prop] ?? '')}"${t === 2 ? '' : ' dir="ltr" inputmode="decimal"'}></td>`).join('')}
+        ${INPUT_COLS.map(([col, prop, , , t]) => {
+          // From the payroll-link month on, salaries come from «كشف الرواتب»: the old recorded figure is no longer used.
+          const linkedLegacy = col === 'salaries_recorded_legacy' && from && i + 1 >= from;
+          return `<td><input class="fin-cell${t === 2 ? '' : ' n'}${linkedLegacy ? ' fin-off' : ''}" ${lk || linkedLegacy ? 'disabled' : ''} data-fin-in="${i + 1}|${col}" value="${esc(m?.[prop] ?? '')}"${t === 2 ? '' : ' dir="ltr" inputmode="decimal"'}${linkedLegacy ? ` title="${T('غير مستخدم – المرتبات من «كشف الرواتب» في التطبيق', 'Not used – salaries come from the app\'s payroll')}" placeholder="🔗"` : ''}></td>`;
+        }).join('')}
         <td class="n calc">${app?.sales != null ? fmt(app.sales, 'money0') : ''}</td>
         <td>${lk ? '🔒' : `<button class="btn btn-success btn-sm" data-fin-insave="${i + 1}">💾</button>`}</td></tr>`;
     }).join('');
@@ -519,7 +523,8 @@ const FIN = (() => {
         ${lockedOb ? '🔒' : `<button class="btn btn-success btn-sm" data-fin-obsave>💾 ${T('حفظ', 'Save')}</button>`}</div>
       <p class="fin-foot">${T('الخلايا الصفراء = مدخلات. اترك الخلية فارغة إذا لم يُدخل الرقم بعد (الفارغ ليس صفرًا). العمود الأخير للمقارنة: المبيعات المسجلة في «الإدخال الشهري» بالتطبيق.',
         'Yellow cells are inputs. Leave a cell empty when not entered yet (empty ≠ zero). Last column, for comparison: sales recorded in the app\'s «Monthly input».')}</p>
-      <div class="fin-tw"><table class="fin-rt"><thead><tr><th class="lbl">${T('الشهر', 'Month')}</th><th>${T('الأيام', 'Days')}</th>${INPUT_COLS.map(c => `<th>${ar() ? c[2] : c[3]}</th>`).join('')}<th class="calc">🔗 ${T('مبيعات التطبيق', 'App sales')}</th><th></th></tr></thead><tbody>${rowsH}</tbody></table></div>`,
+      ${from ? `<p class="fin-foot">🔗 ${T(`«المرتبات المسجلة سابقًا» رمادية بدءًا من ${MN()[from - 1]}: المرتبات تأتي تلقائيًا من «كشف الرواتب»، والعمود للمطابقة مع ملفات Excel القديمة فقط.`, `«Salaries recorded» is greyed out from ${MN()[from - 1]}: salaries come automatically from the app's payroll; the column is only for reconciling the old Excel files.`)}</p>` : ''}
+      <div class="fin-tw"><table class="fin-rt"><thead><tr><th class="lbl">${T('الشهر', 'Month')}</th><th>${T('الأيام', 'Days')}</th>${INPUT_COLS.map(c => `<th${c[0] === 'salaries_recorded_legacy' && from ? ` title="${T(`لا يُستخدم بدءًا من ${MN()[from - 1]}`, `Not used from ${MN()[from - 1]}`)}"` : ''}>${ar() ? c[2] : c[3]}</th>`).join('')}<th class="calc">🔗 ${T('مبيعات التطبيق', 'App sales')}</th><th></th></tr></thead><tbody>${rowsH}</tbody></table></div>`,
       xbtn('inputs', {b: b.branchId}));
   }
 
@@ -1033,7 +1038,7 @@ const FIN = (() => {
     // monthly inputs / opening balances / commission header
     on('[data-fin-insave]', 'click', el => {
       const m = +el.dataset.finInsave, row = {branch_id: S.branch, year: S.data.year, month: m};
-      try { document.querySelectorAll(`[data-fin-in^="${m}|"]`).forEach(i => { const col = i.dataset.finIn.split('|')[1]; row[col] = col === 'notes' ? nz(i.value) : toNum(i.value);
+      try { document.querySelectorAll(`[data-fin-in^="${m}|"]:not(.fin-off)`).forEach(i => { const col = i.dataset.finIn.split('|')[1]; row[col] = col === 'notes' ? nz(i.value) : toNum(i.value);
         if (['invoices', 'items_sold', 'sku_end'].includes(col) && row[col] !== null && !Number.isInteger(row[col])) throw new Error(T('عدد صحيح فقط', 'Whole number only')); }); }
       catch (e) { return showToast(e.message, 'error'); }
       act(async () => check(await sb.from('fin_monthly_inputs').upsert(row, {onConflict: 'branch_id,year,month'})));
@@ -1133,7 +1138,7 @@ const FIN = (() => {
     .fin .fin-rt tr.section td{background:var(--bg3);color:#003392;font-weight:800}.fin .fin-rt tr.ratio td{color:var(--text2);font-style:italic}.fin .fin-rt tr.subtle td{color:var(--text3)}
     .fin .fin-rt td.in{color:#1d4ed8;background:#fffdf0}.fin .fin-rt tr.warnrow td{background:#fffbeb}.fin .warnc{color:var(--warn);font-weight:700}
     .fin .fin-rt td.acts{white-space:nowrap}.fin .fin-rt td.acts .btn{padding:2px 6px}
-    .fin .fin-cell{background:#fffbe6;color:#1d4ed8;border:1px solid #f1e3a6;border-radius:6px;padding:3px 6px;min-width:90px;width:100%}.fin .fin-cell:disabled{background:var(--bg3);color:var(--text3)}
+    .fin .fin-cell{background:#fffbe6;color:#1d4ed8;border:1px solid #f1e3a6;border-radius:6px;padding:3px 6px;min-width:90px;width:100%}.fin .fin-cell:disabled{background:var(--bg3);color:var(--text3)}.fin .fin-cell.fin-off{background:#e5e7eb;border-color:#d1d5db;color:#9ca3af;cursor:not-allowed}
     .fin .fin-notes,.fin .fin-foot{font-size:12px;color:var(--text3);margin:6px 0}.fin .fin-notes{padding-inline-start:18px}
     .fin .fin-chart{width:100%;height:auto}.fin .fin-chart .ax{font-size:10px;fill:#475569}
     .fin .fin-legend{display:flex;gap:14px;justify-content:center;font-size:12px;color:var(--text2)}.fin .fin-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-inline-end:5px}
