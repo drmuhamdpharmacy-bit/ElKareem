@@ -8,7 +8,8 @@
 --     (if they are still checked in at the other branch, that one is closed automatically first);
 --   • see their own attendance in that branch;
 --   • see their personal page for that branch (snapshot row '<code>@<branch>');
---   • complete missions and read messages from that branch.
+--   • complete missions and read messages from that branch
+--     (a mission marked «صورة إثبات إلزامية» can only be completed after its photo is uploaded).
 --  Nothing changes for employees who work in one branch only.
 -- ════════════════════════════════════════════════════════════════════
 
@@ -158,10 +159,21 @@ declare
   v_bs    text[];
   v_patch jsonb;
   v_can   boolean;
+  v_req   boolean;   -- this mission needs a proof photo (set by the owner / supervisor)
+  v_has   boolean;   -- the employee already uploaded it
 begin
   if v_emp is null or v_b is null then raise exception 'not_employee'; end if;
   v_bs := public._emp_branches(v_emp, v_b);
+  if p_id is not null then
+    select bool_or(coalesce((m ->> 'photoRequired')::boolean, false)),
+           bool_or(coalesce(m ->> 'employeeImageData', '') <> '')
+      into v_req, v_has
+      from public.app_store s, jsonb_array_elements(case when jsonb_typeof(s.data -> p_mk) = 'array' then s.data -> p_mk else '[]'::jsonb end) m
+     where s.id = any(array(select x || '/missions' from unnest(v_bs) x))
+       and m ->> 'id' = p_id and m ->> 'empId' = v_emp;
+  end if;
   if p_action = 'complete' then
+    if coalesce(v_req, false) and not coalesce(v_has, false) then raise exception 'photo_required'; end if;
     v_patch := '{"completed":true}'::jsonb;
   elsif p_action = 'seen' then
     v_patch := '{"seenByEmployee":true}'::jsonb; p_id := null;
@@ -172,7 +184,8 @@ begin
       from public.app_store s, jsonb_array_elements(s.data) e
      where s.id = any(array(select x || '/employees' from unnest(v_bs) x))
        and jsonb_typeof(s.data) = 'array' and e ->> 'id' = v_emp;
-    if not coalesce(v_can, false) then raise exception 'not_allowed'; end if;
+    -- allowed for employees with photo permission, and always for a mission that requires a proof photo
+    if not (coalesce(v_can, false) or coalesce(v_req, false)) then raise exception 'not_allowed'; end if;
     v_patch := jsonb_build_object('employeeImageData', p_img);
   else
     raise exception 'bad_action';
