@@ -10,6 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="crm.js"></script> <!-- CRM: متابعة العملاء -->
+<script src="finance.js"></script> <!-- المالية: للمالك فقط -->
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -827,6 +828,7 @@ async function afterLogin(session){
   state.loggedIn=true;
   subscribeRealtime();
   CRM.onLogin(); // CRM
+  FIN.onLogin(); // المالية
 }
 async function doLogout(){
   if(_realtimeSub){sb.removeChannel(_realtimeSub);_realtimeSub=null}
@@ -835,7 +837,7 @@ async function doLogout(){
   await sb.auth.signOut();
   logoutLocal();
 }
-function logoutLocal(){CRM.reset();stopKiosk();document.querySelectorAll('.toast').forEach(t=>t.remove());state.loggedIn=false;state.user=null;state.myPerfEmpId=null;state.modal=null;resetData();render()}
+function logoutLocal(){CRM.reset();FIN.reset();stopKiosk();document.querySelectorAll('.toast').forEach(t=>t.remove());state.loggedIn=false;state.user=null;state.myPerfEmpId=null;state.modal=null;resetData();render()}
 
 // ══════════════════════════════════════════════
 //  NOTIFICATIONS
@@ -890,7 +892,7 @@ function navItems(){
   const an=[];if(has('kpi'))an.push({id:'kpi',icon:'⭐',label:'محرك KPI'});if(has('leaderboard'))an.push({id:'leaderboard',icon:'🏆',label:'المتصدرون'});if(has('insights'))an.push({id:'insights',icon:'💡',label:'التحليلات'});if(an.length)groups.push({group:'تحليلات',items:an});
   const comm=[];if(has('messages'))comm.push({id:'messages',icon:'💬',label:'الرسائل'});if(has('audit'))comm.push({id:'audit',icon:'🕵️',label:'سجل التغييرات'});if(has('settings'))comm.push({id:'settings',icon:'⚙️',label:'الإعدادات'});if(comm.length)groups.push({group:'أخرى',items:comm});
   groups[state.user.role==='senior'?'unshift':'push']({group:'حسابي',items:[...(state.user.empId?[{id:'mycheckin',icon:'📍',label:'الحضور وساعاتي'}]:[]),{id:'myperformance',icon:'🪪',label:'أدائي الشهري'},...(state.user.empId?[{id:'myleaves',icon:'🌴',label:'إجازاتي'}]:[]),{id:'mypassword',icon:'🔑',label:'كلمة المرور'}]});
-  return CRM.nav(groups); // CRM
+  return FIN.nav(CRM.nav(groups)); // CRM + المالية (owners only)
 }
 
 // ══════════════════════════════════════════════
@@ -991,7 +993,7 @@ function renderSidebar(){
 // ══════════════════════════════════════════════
 function renderTopbar(){
   const labels={dashboard:'لوحة التحكم',monthly:'الإدخال الشهري',payroll:'كشف الرواتب',commission:'شفافية العمولة',employees:'إدارة الموظفين',attendance:'الحضور والتأخير',missions:'المهام والأهداف',bonuses:'المكافآت والجزاءات',withdrawals:'🛒 المسحوبات',kpi:'محرك KPI',leaderboard:'المتصدرون',insights:'التحليلات',messages:'الرسائل',settings:'الإعدادات',myperformance:'أدائي الشهري',mymissions:'مهامي',myattendance:'سجل حضوري',mymessages:'رسائلي',shifts:'جدول الورديات',mypassword:'كلمة المرور',leaves:'الإجازات والطلبات',kiosk:'📺 شاشة الحضور',audit:'سجل التغييرات',mycheckin:'الحضور وساعاتي',myleaves:'إجازاتي'};
-  return`<div class="topbar"><div class="topbar-left"><button class="hamburger" id="hamburger-btn">☰</button><h2>${labels[state.page]||CRM.label(state.page)||''}</h2></div><div class="topbar-right">${isOwner()&&Object.keys(branchData).length>1?`<select id="branch-sel" class="branch-sel">${Object.keys(branchData).map(b=>`<option value="${esc(b)}"${b===state.branch?' selected':''}>🏢 ${esc(branchName(b))}</option>`).join('')}</select>`:`<span class="badge badge-green" style="padding:6px 12px">🏢 ${esc(branchName(state.branch))}</span>`}<select id="year-sel" style="width:86px">${[2025,2026,2027,2028,2029,2030].map(y=>`<option value="${y}"${state.year===y?' selected':''}>${y}</option>`).join('')}</select><select id="month-sel" style="width:108px">${MONTHS_AR.map((m,i)=>`<option value="${i}"${state.month===i?' selected':''}>${m}</option>`).join('')}</select></div></div>`;
+  return`<div class="topbar"><div class="topbar-left"><button class="hamburger" id="hamburger-btn">☰</button><h2>${labels[state.page]||CRM.label(state.page)||FIN.label(state.page)||''}</h2></div><div class="topbar-right">${isOwner()&&Object.keys(branchData).length>1?`<select id="branch-sel" class="branch-sel">${Object.keys(branchData).map(b=>`<option value="${esc(b)}"${b===state.branch?' selected':''}>🏢 ${esc(branchName(b))}</option>`).join('')}</select>`:`<span class="badge badge-green" style="padding:6px 12px">🏢 ${esc(branchName(state.branch))}</span>`}<select id="year-sel" style="width:86px">${[2025,2026,2027,2028,2029,2030].map(y=>`<option value="${y}"${state.year===y?' selected':''}>${y}</option>`).join('')}</select><select id="month-sel" style="width:108px">${MONTHS_AR.map((m,i)=>`<option value="${i}"${state.month===i?' selected':''}>${m}</option>`).join('')}</select></div></div>`;
 }
 
 // ══════════════════════════════════════════════
@@ -1024,7 +1026,7 @@ function renderPage(){
     case 'leaves':return renderLeaves();
     case 'myleaves':return renderMyLeaves();
     case 'audit':return isOwner()?renderAudit():'';
-    default:return CRM.renderPage(state.page); // CRM pages (crm_*)
+    default:return FIN.renderPage(state.page)||CRM.renderPage(state.page); // المالية (fin_*) + CRM pages (crm_*)
   }
 }
 
@@ -1115,10 +1117,16 @@ function renderMonthly(){
   ${dailySalesCard()}`;
 }
 
+// Payroll rows of the ACTIVE branch for a pay month — used by the payroll page and by المالية (finance.js),
+// so both always show the same net pay. Employees who left before the month are excluded.
+function payrollRows(mk=monthKey()){
+  const md=getMonthData(mk),commData=calcCommission(md.sales||0,mk);
+  const list=mk===monthKey()?employees:(employeesAll||[]).filter(e=>!e.leftMk||mkOrd(e.leftMk)>=mkOrd(mk));
+  return{md,commData,rows:list.map(e=>{const hrs=md.hours[e.id]||0,sal=calcSalary(e,hrs),comm=e.commPct>0?commData.pool*(e.commPct/100):0,{total:bt}=getEmpBonuses(e.id,mk),{total:pt}=getEmpPenalties(e.id,mk),{total:wd}=getEmpWithdrawals(e.id,mk),net=sal+comm+bt-pt-wd,dp=dayPen(e.id,mk);return{e,hrs,sal,comm,bt,pt,wd,net,ptDays:dp.days,ptDayAmt:dp.amt}})};
+}
 function renderPayroll(){
-  const md=getMonthData(),commData=calcCommission(md.sales||0),mk=monthKey();
-  let grand=0;
-  const rows=employees.map(e=>{const hrs=md.hours[e.id]||0,sal=calcSalary(e,hrs),comm=e.commPct>0?commData.pool*(e.commPct/100):0,{total:bt}=getEmpBonuses(e.id,mk),{total:pt}=getEmpPenalties(e.id,mk),{total:wd}=getEmpWithdrawals(e.id,mk),net=sal+comm+bt-pt-wd,dp=dayPen(e.id,mk);grand+=net;return{e,hrs,sal,comm,bt,pt,wd,net,ptDays:dp.days,ptDayAmt:dp.amt}});
+  const mk=monthKey(),{md,commData,rows}=payrollRows(mk);
+  const grand=rows.reduce((t,r)=>t+r.net,0);
   return`<div class="grid-4" style="margin-bottom:16px">
     <div class="stat-card"><span class="sc-icon">💰</span><div class="sc-label">إجمالي الرواتب</div><div class="sc-val" style="color:var(--gold2)">${fmtNum(grand)} ج.م</div></div>
     <div class="stat-card"><span class="sc-icon">📈</span><div class="sc-label">مجمع العمولة</div><div class="sc-val" style="color:var(--success)">${fmtNum(commData.pool)} ج.م</div></div>
@@ -2022,6 +2030,7 @@ function renderModal(){
       <div class="modal-footer" style="justify-content:space-between"><div style="display:flex;gap:6px"><button class="btn btn-ghost btn-sm" id="perm-all">الكل</button><button class="btn btn-ghost btn-sm" id="perm-none">لا شيء</button></div><div style="display:flex;gap:6px"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save-perms">💾 حفظ</button></div></div>`;
   }
   if(String(m.type).startsWith('crm-'))content=CRM.modal(m); // CRM
+  if(String(m.type).startsWith('fin-'))content=FIN.modal(m); // المالية
   return`<div class="modal-overlay" id="modal-overlay"><div class="modal">${content}</div></div>`;
 }
 
@@ -2030,6 +2039,7 @@ function renderModal(){
 // ══════════════════════════════════════════════
 function bindEvents(){
   try{CRM.bind()}catch(e){console.error('CRM',e)} // CRM
+  try{FIN.bind()}catch(e){console.error('FIN',e)} // المالية
   // Nav
   document.querySelectorAll('.nav-item[data-page]').forEach(el=>{el.onclick=()=>{state.page=el.dataset.page;render()}});
   document.getElementById('logout-btn')?.addEventListener('click',doLogout);

@@ -1,0 +1,6 @@
+# Financial data must NEVER be committed: this repository is public.
+finance/data/
+*.xlsx
+*.csv
+node_modules/
+finance/e2e/node_modules/
