@@ -475,8 +475,8 @@ function attRowsFor(b,mk){
   const[y,m]=mk.split('-').map(Number),rows=attDays[`${b}|${y}`];
   return(_attMemo[k]=rows?rows.filter(r=>payMonthKeyOf(r.day)===mk):null);
 }
-// ── Lateness excuses («إذن تأخير»): a late day with an approved excuse does not count as late. Max LATE_MAX per pay month.
-const LATE_KIND='إذن تأخير',LATE_MAX=2;
+// ── Lateness excuses («إذن تأخير»): a late day with an approved excuse does not count as late. Max LATE_MAX per pay month; warning above LATE_WARN.
+const LATE_KIND='إذن تأخير',LATE_MAX=15,LATE_WARN=2; // up to 15 per month; above 2 the supervisor/owner is warned before approving
 function mdOf(b){return b===state.branch?monthlyData:((branchData[b]||{}).monthly_data||{})}
 function excusesOf(empId,mk,b=state.branch){
   if(isStaff())return((mdOf(b)[mk]||{}).lateExcuse||{})[empId]||[];
@@ -1721,6 +1721,7 @@ const LEAVE_KINDS=['سنوية','مرضية','عارضة','بدون أجر','أ�
 const todayCairo=()=>cairo(new Date()).date;
 function mkLabel(mk){const[y,m]=mk.split('-').map(Number);return`${MONTHS_AR[m]} ${y}`}
 // excuses used in a pay month: approved ones (+ the employee's own pending requests, when rows given)
+function excuseWarnOk(name,used,mk){return used<LATE_WARN||confirm(`⚠️ تنبيه: ${name} استخدم ${used} أذونات تأخير في ${mkLabel(mk)} (المعتاد ${LATE_WARN} فقط).\nهذا سيكون الإذن رقم ${used+1}. هل تريد المتابعة؟`)}
 function excusesUsed(empId,mk,rows){return excusesOf(empId,mk).length+(rows||[]).filter(r=>r.emp_id===empId&&r.kind===LATE_KIND&&r.status==='pending'&&payMonthKeyOf(r.from_date)===mk).length}
 // staff: record / remove an approved excuse in every branch (that this user can save) where the employee is on the staff list
 function excuseBranches(empId){return Object.keys(branchData).filter(b=>(isOwner()||b===state.branch)&&(b===state.branch?employeesAll:(branchData[b].employees||[])).some(e=>e.id===empId))}
@@ -1733,22 +1734,22 @@ function leaveStatusBadge(s){return s==='approved'?'<span class="badge badge-gre
 function renderLeaves(){
   const rows=lazy('leaves',state.branch,loadLeaves);if(!rows)return loadingHTML;
   const pend=rows.filter(r=>r.status==='pending'),done=rows.filter(r=>r.status!=='pending');
-  const row=r=>`<div class="card-sm" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><div style="font-weight:800">${esc(r.emp_name||r.emp_id)} <span style="font-weight:500;color:var(--text2);font-size:12px">— ${r.kind===LATE_KIND?'⏰ ':''}${esc(r.kind||'')}</span></div>${r.kind===LATE_KIND?`<div style="font-size:13px;margin-top:3px">${fmtDay(r.from_date)} <span style="color:var(--text3)">(${esc(r.from_date)})</span> · <span style="color:${excusesOf(r.emp_id,payMonthKeyOf(r.from_date)).length>=LATE_MAX?'var(--danger)':'var(--text2)'}">استخدم ${excusesOf(r.emp_id,payMonthKeyOf(r.from_date)).length} من ${LATE_MAX} في ${mkLabel(payMonthKeyOf(r.from_date))}</span></div>`:`<div style="font-size:13px;margin-top:3px">${esc(r.from_date)} ← ${esc(r.to_date)} <span style="color:var(--text3)">(${leaveDays(r)} يوم)</span></div>`}${r.note?`<div style="font-size:12px;color:var(--text2);margin-top:3px">${esc(r.note)}</div>`:''}${r.decided_by?`<div style="font-size:11px;color:var(--text3);margin-top:3px">بواسطة: ${esc(r.decided_by)}</div>`:''}</div><div style="display:flex;gap:6px;align-items:center">${r.status==='pending'?`<button class="btn btn-success btn-sm" data-leave-ok="${r.id}">✅ موافقة</button><button class="btn btn-danger btn-sm" data-leave-no="${r.id}">❌ رفض</button>`:`${leaveStatusBadge(r.status)}<button class="btn btn-ghost btn-xs" data-leave-reset="${r.id}" title="إعادة للانتظار">↩️</button>`}</div></div>`;
+  const row=r=>`<div class="card-sm" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><div style="font-weight:800">${esc(r.emp_name||r.emp_id)} <span style="font-weight:500;color:var(--text2);font-size:12px">— ${r.kind===LATE_KIND?'⏰ ':''}${esc(r.kind||'')}</span></div>${r.kind===LATE_KIND?`<div style="font-size:13px;margin-top:3px">${fmtDay(r.from_date)} <span style="color:var(--text3)">(${esc(r.from_date)})</span> · ${(u=>`<span style="color:${u>=LATE_WARN?'var(--danger)':'var(--text2)'};font-weight:${u>=LATE_WARN?800:400}">${u>=LATE_WARN?'⚠️ ':''}استخدم ${u} أذونات في ${mkLabel(payMonthKeyOf(r.from_date))}${u>=LATE_WARN?` (أكثر من ${LATE_WARN})`:''}</span>`)(excusesOf(r.emp_id,payMonthKeyOf(r.from_date)).length)}</div>`:`<div style="font-size:13px;margin-top:3px">${esc(r.from_date)} ← ${esc(r.to_date)} <span style="color:var(--text3)">(${leaveDays(r)} يوم)</span></div>`}${r.note?`<div style="font-size:12px;color:var(--text2);margin-top:3px">${esc(r.note)}</div>`:''}${r.decided_by?`<div style="font-size:11px;color:var(--text3);margin-top:3px">بواسطة: ${esc(r.decided_by)}</div>`:''}</div><div style="display:flex;gap:6px;align-items:center">${r.status==='pending'?`<button class="btn btn-success btn-sm" data-leave-ok="${r.id}">✅ موافقة</button><button class="btn btn-danger btn-sm" data-leave-no="${r.id}">❌ رفض</button>`:`${leaveStatusBadge(r.status)}<button class="btn btn-ghost btn-xs" data-leave-reset="${r.id}" title="إعادة للانتظار">↩️</button>`}</div></div>`;
   return`${fixRequestsCard()}${lateExcusesCard()}<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>🌴 طلبات إجازة في الانتظار</h3><span class="badge badge-gold">${pend.length}</span></div>${pend.length?pend.map(row).join(''):'<p style="color:var(--text3)">لا توجد طلبات جديدة</p>'}</div>
   <div class="card"><h3 style="margin-bottom:12px">📋 السابقة</h3>${done.length?done.map(row).join(''):'<p style="color:var(--text3)">لا يوجد</p>'}</div>`;
 }
 function lateExcusesCard(){
   const mk=monthKey(),le=(monthlyData[mk]||{}).lateExcuse||{},list=Object.entries(le).flatMap(([id,xs])=>(xs||[]).map(x=>({id,...x}))).sort((a,b)=>a.date<b.date?1:-1);
   return`<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>⏰ أذونات التأخير — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()}</h3><button class="btn btn-primary btn-sm" id="add-excuse-btn">+ إذن تأخير لموظف</button></div>
-    <p style="color:var(--text2);font-size:12px;margin-bottom:10px">يوم التأخير الذي عليه إذن لا يُحسب تأخيراً. الحد الأقصى ${LATE_MAX} مرات لكل موظف في الشهر. الموظف يطلبه من «إجازاتي»، أو تضيفه أنت هنا إذا أبلغك.</p>
-    ${list.length?list.map(x=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;flex-wrap:wrap"><span><strong>${esc((employees.find(e=>e.id===x.id)||{}).name||x.id)}</strong> — ${fmtDay(x.date)}${x.note?` <span style="color:var(--text2)">— ${esc(x.note)}</span>`:''}${x.by?` <span style="color:var(--text3);font-size:11px">(${esc(x.by)})</span>`:''}</span><span><span class="badge ${excusesOf(x.id,mk).length>=LATE_MAX?'badge-red':'badge-gray'}">${excusesOf(x.id,mk).length}/${LATE_MAX}</span> <button class="btn btn-danger btn-xs" data-del-excuse="${esc(x.id)}|${esc(x.date)}">×</button></span></div>`).join(''):'<p style="color:var(--text3);font-size:13px">لا توجد أذونات هذا الشهر</p>'}</div>`;
+    <p style="color:var(--text2);font-size:12px;margin-bottom:10px">يوم التأخير الذي عليه إذن لا يُحسب تأخيراً. المعتاد ${LATE_WARN} مرات في الشهر — بعدها يظهر لك تنبيه قبل الموافقة (الحد الأقصى ${LATE_MAX}). الموظف يطلبه من «إجازاتي»، أو تضيفه أنت هنا إذا أبلغك.</p>
+    ${list.length?list.map(x=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;flex-wrap:wrap"><span><strong>${esc((employees.find(e=>e.id===x.id)||{}).name||x.id)}</strong> — ${fmtDay(x.date)}${x.note?` <span style="color:var(--text2)">— ${esc(x.note)}</span>`:''}${x.by?` <span style="color:var(--text3);font-size:11px">(${esc(x.by)})</span>`:''}</span><span>${(u=>`<span class="badge ${u>LATE_WARN?'badge-red':'badge-gray'}">${u>LATE_WARN?'⚠️ ':''}${u} هذا الشهر</span>`)(excusesOf(x.id,mk).length)} <button class="btn btn-danger btn-xs" data-del-excuse="${esc(x.id)}|${esc(x.date)}">×</button></span></div>`).join(''):'<p style="color:var(--text3);font-size:13px">لا توجد أذونات هذا الشهر</p>'}</div>`;
 }
 function renderMyLeaves(){
   if(!state.user.empId)return`<div class="card" style="text-align:center;color:var(--text3);padding:40px">هذه الصفحة للموظفين المرتبطين بحساب</div>`;
   const rows=lazy('leaves',isStaff()?state.branch:'me',loadLeaves);
   const mine=(rows||[]).filter(r=>r.emp_id===state.user.empId);
   const today=new Date().toISOString().slice(0,10),tmk=payMonthKeyOf(todayCairo()),used=rows?excusesUsed(state.user.empId,tmk,rows):0,left=Math.max(0,LATE_MAX-used);
-  return`<div class="card" style="margin-bottom:16px;border:1px solid #bfdbfe"><div class="section-header"><h3>⏰ إذن تأخير</h3><span class="badge ${left?'badge-blue':'badge-red'}">المتبقي لك هذا الشهر: ${left} من ${LATE_MAX}</span></div>
+  return`<div class="card" style="margin-bottom:16px;border:1px solid #bfdbfe"><div class="section-header"><h3>⏰ إذن تأخير</h3><span class="badge ${used>=LATE_WARN?'badge-gold':'badge-blue'}">استخدمت هذا الشهر: ${used}</span></div>
     <p style="color:var(--text2);font-size:12px;margin-bottom:12px">إذا كنت ستتأخر، أرسل الطلب قبلها. بعد موافقة المشرف لا يُحسب هذا اليوم تأخيراً.</p>
     <div class="form-row"><div class="form-group"><label>اليوم</label><input type="date" id="late-date" value="${todayCairo()}"></div><div class="form-group"><label>سأصل تقريباً الساعة</label><input type="time" id="late-time"></div></div>
     <div class="form-group"><label>السبب</label><input id="late-note" maxlength="200" placeholder="مثال: موعد عند الطبيب"></div>
@@ -1934,7 +1935,7 @@ function renderModal(){
       <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="mv-save">🔁 نقل</button></div>`;
   } else if(m.type==='add-excuse'){
     content=`<div class="modal-header"><h3>⏰ إذن تأخير لموظف</h3><button class="modal-close" id="modal-cancel">✕</button></div>
-      <div class="form-group"><label>الموظف</label><select id="modal-emp">${employees.map(e=>`<option value="${esc(e.id)}">${esc(e.name)} (${excusesOf(e.id,monthKey()).length}/${LATE_MAX})</option>`).join('')}</select></div>
+      <div class="form-group"><label>الموظف</label><select id="modal-emp">${employees.map(e=>`<option value="${esc(e.id)}">${esc(e.name)} (${excusesOf(e.id,monthKey()).length} هذا الشهر${excusesOf(e.id,monthKey()).length>=LATE_WARN?' ⚠️':''})</option>`).join('')}</select></div>
       <div class="form-group"><label>اليوم</label><input type="date" id="exc-date" value="${todayCairo()}"></div>
       <div class="form-group"><label>ملاحظة (اختياري)</label><input id="exc-note" maxlength="200" placeholder="مثال: اتصل وأبلغ أنه سيتأخر ساعة"></div>
       <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">💾 حفظ</button></div>`;
@@ -2124,7 +2125,7 @@ function bindEvents(){
   // Leaves
   const decide=async(id,st)=>{
     const r=((cache.leaves||{}).rows||[]).find(x=>String(x.id)===String(id)),late=r&&r.kind===LATE_KIND;
-    if(late&&st==='approved'){const mk=payMonthKeyOf(r.from_date);if(!excusesOf(r.emp_id,mk).some(x=>x.date===r.from_date)&&excusesOf(r.emp_id,mk).length>=LATE_MAX){showToast(`${r.emp_name||r.emp_id} وصل للحد الأقصى (${LATE_MAX} أذونات تأخير) في ${mkLabel(mk)}`,'error');return}}
+    if(late&&st==='approved'){const mk=payMonthKeyOf(r.from_date);if(!excusesOf(r.emp_id,mk).some(x=>x.date===r.from_date)){const u=excusesOf(r.emp_id,mk).length;if(u>=LATE_MAX){showToast(`${r.emp_name||r.emp_id} وصل للحد الأقصى (${LATE_MAX} أذونات تأخير) في ${mkLabel(mk)}`,'error');return}if(!excuseWarnOk(r.emp_name||r.emp_id,u,mk))return}}
     const{error}=await sb.rpc('decide_leave',{p_id:+id,p_status:st});if(error){showToast(errMsg(error),'error');return}
     if(late){if(st==='approved')addExcuse(r.emp_id,r.from_date,{note:r.note||'',by:state.user.name,req:r.id});else removeExcuse(r.emp_id,r.from_date);saveAll()}
     await loadLeaves();render();showToast(st==='approved'?'تمت الموافقة ✓':st==='rejected'?'تم الرفض':'أعيد للانتظار')};
@@ -2394,6 +2395,7 @@ function bindEvents(){
         const mk=payMonthKeyOf(date);
         if(excusesOf(empId,mk).some(x=>x.date===date)){showToast('يوجد إذن لهذا اليوم بالفعل','error');return}
         if(excusesOf(empId,mk).length>=LATE_MAX){showToast(`وصل هذا الموظف للحد الأقصى (${LATE_MAX} أذونات) في ${mkLabel(mk)}`,'error');return}
+        if(!excuseWarnOk((employees.find(e=>e.id===empId)||{}).name||empId,excusesOf(empId,mk).length,mk))return;
         addExcuse(empId,date,{note,by:state.user.name});saveAll();state.modal=null;render();showToast('تم حفظ إذن التأخير ✓');
       });
     } else if(mm.type==='add-badge'){
