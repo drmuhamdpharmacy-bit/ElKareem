@@ -4,7 +4,7 @@
  * always recomputed from the totals, never summed or averaged.
  */
 import type { BranchResult, Series } from './branch';
-import type { CompanyResult } from './company';
+import { consolidatedTurnover, type CompanyResult } from './company';
 import { D, Decimal, ZERO, div, sum, toNum } from './decimal';
 import { MONTHS_AR, MONTHS_EN } from './fiscal';
 import type { Fmt } from './i18n';
@@ -769,4 +769,68 @@ export function ytdExpenseBreakdown(c: CompanyResult): { key: string; ar: string
   out.push({ key: 'EXPIRED', ar: 'التوالف والإكسبير', en: 'Expired & damaged', value: Y(c.consolidated.EXPIRED, R).toNumber() });
   out.push({ key: 'SHARED', ar: 'مصروفات مشتركة', en: 'Shared', value: Y(c.sharedSeries, R).toNumber() });
   return out.filter((x) => x.value !== 0).sort((a, b) => b.value - a.value);
+}
+
+// ================================================================================================
+// Consolidated inventory turnover (company level)
+// ================================================================================================
+
+const TURN_COLS: ReportColumn[] = [
+  { key: 'days', ar: 'الأيام', en: 'Days', fmt: 'days' },
+  { key: 'open', ar: 'مخزون أول المدة', en: 'Opening inventory', fmt: 'money' },
+  { key: 'purch', ar: 'صافي المشتريات', en: 'Net purchases', fmt: 'money' },
+  { key: 'close', ar: 'مخزون آخر المدة', en: 'Closing inventory', fmt: 'money' },
+  { key: 'avg', ar: 'متوسط المخزون', en: 'Average inventory', fmt: 'money' },
+  { key: 'cogs', ar: 'تكلفة المبيعات', en: 'COGS', fmt: 'money' },
+  { key: 'scogs', ar: 'تكلفة المبيعات من المخزون', en: 'Stock-based COGS', fmt: 'money' },
+  { key: 'diff', ar: 'الفرق (تسويات/عجز)', en: 'Difference', fmt: 'money' },
+  { key: 'turn', ar: 'معدل الدوران', en: 'Turnover', fmt: 'num4', emphasis: true },
+  { key: 'ann', ar: 'الدوران السنوي', en: 'Annualised', fmt: 'num2' },
+  { key: 'dsi', ar: 'أيام المخزون DSI', en: 'DSI', fmt: 'num2' },
+  { key: 'branches', ar: 'الفروع المحسوبة', en: 'Branches included', fmt: 'text' },
+];
+const branchLabel = (c: CompanyResult, ids: number[], lang: 'ar' | 'en') =>
+  ids.length ? ids.map((id) => { const b = c.branches.find((x) => x.branchId === id)!.dataset.branch; return lang === 'ar' ? b.nameAr : b.nameEn; }).join(' + ') : '—';
+const turnRow = (c: CompanyResult, ar: string, en: string, r: ReturnType<typeof consolidatedTurnover>['months'][number], style: RowStyle = 'normal'): ReportRow => ({
+  ar, en, style, fmt: 'money', fmts: TURN_COLS.map((x) => x.fmt),
+  values: [r.days, n(r.opening), n(r.netPurchases), n(r.closing), n(r.average), n(r.cogs), n(r.stockCogs), n(r.difference), n(r.turnover), n(r.annualised), n(r.dsi), branchLabel(c, r.branchIds, 'ar')],
+});
+
+export function consolidatedTurnoverTable(c: CompanyResult, lang: 'ar' | 'en' = 'ar'): ReportTable {
+  const t = consolidatedTurnover(c);
+  return {
+    id: 'turnover-consolidated', titleAr: 'دوران المخزون المجمع', titleEn: 'Consolidated inventory turnover',
+    labelAr: 'الشهر', labelEn: 'Month', columns: TURN_COLS,
+    rows: t.months.map((r, i) => {
+      const row = turnRow(c, MONTHS_AR[i], MONTHS_EN[i], r);
+      row.values[11] = branchLabel(c, r.branchIds, lang);
+      return row;
+    }),
+    notesAr: [
+      'الدوران المجمع = مجموع تكلفة المبيعات ÷ ((مجموع مخزون أول المدة + مجموع مخزون آخر المدة) ÷ 2) — وليس متوسط نسب الفروع.',
+      'يدخل الفرع في الحساب فقط في الشهور التي أُدخل له فيها مخزون أول وآخر المدة؛ الفرع بدون مخزون لا يُحسب لا في التكلفة ولا في المخزون.',
+      'التحويلات بين الفروع لا تؤثر على الرقم المجمع.',
+    ],
+    notesEn: [
+      'Consolidated turnover = Σ COGS ÷ ((Σ opening + Σ closing) ÷ 2) — not an average of the branch ratios.',
+      'A branch is included only in periods where its opening and closing inventory are entered; a branch without inventory is left out of both COGS and inventory.',
+      'Transfers between branches do not affect the consolidated figure.',
+    ],
+  };
+}
+
+export function consolidatedTurnoverQuarterTable(c: CompanyResult, lang: 'ar' | 'en' = 'ar'): ReportTable {
+  const t = consolidatedTurnover(c);
+  const names = [['Q1 (يناير–مارس)', 'Q1 (Jan–Mar)'], ['Q2 (أبريل–يونيو)', 'Q2 (Apr–Jun)'], ['Q3 (يوليو–سبتمبر)', 'Q3 (Jul–Sep)'], ['Q4 (أكتوبر–ديسمبر)', 'Q4 (Oct–Dec)']];
+  return {
+    id: 'turnover-consolidated-q', titleAr: 'دوران المخزون المجمع ربع السنوي', titleEn: 'Consolidated quarterly turnover',
+    labelAr: 'الربع', labelEn: 'Quarter', columns: TURN_COLS,
+    rows: t.quarters.map((q) => {
+      const row = turnRow(c, names[q.quarter - 1][0], names[q.quarter - 1][1], q);
+      row.values[11] = branchLabel(c, q.branchIds, lang);
+      return row;
+    }),
+    notesAr: ['يظهر الربع بعد إدخال مخزون آخر شهوره لفرع واحد على الأقل.'],
+    notesEn: ['A quarter appears once at least one branch has the closing inventory of its last month.'],
+  };
 }

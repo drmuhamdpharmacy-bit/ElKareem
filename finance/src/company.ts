@@ -81,3 +81,67 @@ export function simulateSharedAllocation(r: CompanyResult, upToMonth = r.reportM
 }
 
 export type { Decimal };
+
+// ---------------------------------------------------------------- consolidated inventory turnover
+export interface ConsolidatedTurnoverRow {
+  month: number;
+  days: number;
+  /** Branch ids whose inventory is complete for the period (opening AND closing entered). */
+  branchIds: number[];
+  opening: Decimal | null;
+  netPurchases: Decimal | null;
+  closing: Decimal | null;
+  average: Decimal | null;
+  cogs: Decimal | null;
+  stockCogs: Decimal | null;
+  difference: Decimal | null;
+  turnover: Decimal | null;
+  annualised: Decimal | null;
+  dsi: Decimal | null;
+}
+
+/**
+ * Company-wide turnover = Σ COGS ÷ ((Σ opening + Σ closing) ÷ 2) over the branches that have a complete
+ * inventory for the period — never an average of the branch ratios. A branch without opening/closing
+ * inventory (e.g. a new branch) is left out of BOTH the COGS and the inventory, so it cannot distort the ratio.
+ */
+export function consolidatedTurnover(c: CompanyResult): { months: ConsolidatedTurnoverRow[]; quarters: (ConsolidatedTurnoverRow & { quarter: number; available: boolean })[] } {
+  const days = c.branches[0]?.calendar.map((x) => x.days) ?? Array(12).fill(30);
+  const build = (month: number, d: number, parts: { id: number; opening: Decimal; closing: Decimal; cogs: Decimal | null; purchases: Decimal | null; stockCogs: Decimal | null }[]): ConsolidatedTurnoverRow => {
+    if (!parts.length) {
+      return { month, days: d, branchIds: [], opening: null, netPurchases: null, closing: null, average: null, cogs: null, stockCogs: null, difference: null, turnover: null, annualised: null, dsi: null };
+    }
+    const opening = sum(parts.map((p) => p.opening));
+    const closing = sum(parts.map((p) => p.closing));
+    const average = opening.plus(closing).div(2);
+    const withCogs = parts.filter((p) => p.cogs !== null);
+    const cogs = withCogs.length ? sum(withCogs.map((p) => p.cogs)) : null;
+    const allPurch = parts.every((p) => p.purchases !== null);
+    const stockCogs = parts.every((p) => p.stockCogs !== null) ? sum(parts.map((p) => p.stockCogs)) : null;
+    const t = cogs !== null ? div(cogs, average) : null;
+    return {
+      month, days: d, branchIds: parts.map((p) => p.id), opening, closing, average, cogs,
+      netPurchases: allPurch ? sum(parts.map((p) => p.purchases)) : null,
+      stockCogs, difference: stockCogs !== null && cogs !== null ? stockCogs.minus(cogs) : null,
+      turnover: t, annualised: t ? t.times(365).div(d) : null, dsi: t ? div(D(d), t) : null,
+    };
+  };
+  const months = months12((m) => build(m, days[m - 1], c.branches.flatMap((b) => {
+    const t = b.turnover[m - 1];
+    return t.opening !== null && t.closing !== null
+      ? [{ id: b.branchId, opening: t.opening, closing: t.closing, cogs: t.cogs, purchases: t.netPurchases, stockCogs: t.stockCogs }] : [];
+  })));
+  const quarters = [1, 2, 3, 4].map((q) => {
+    const ms = [q * 3 - 2, q * 3 - 1, q * 3];
+    const d = ms.reduce((a, m) => a + days[m - 1], 0);
+    const parts = c.branches.flatMap((b) => {
+      const qq = b.quarters[q - 1];
+      if (!qq.available || qq.opening === null || qq.closing === null) return [];
+      const rows = ms.map((m) => b.turnover[m - 1]);
+      return [{ id: b.branchId, opening: qq.opening, closing: qq.closing, cogs: qq.cogs,
+        purchases: qq.netPurchases, stockCogs: rows.every((r) => r.stockCogs !== null) ? sum(rows.map((r) => r.stockCogs)) : null }];
+    });
+    return { ...build(ms[2], d, parts), quarter: q, available: parts.length > 0 };
+  });
+  return { months, quarters };
+}
