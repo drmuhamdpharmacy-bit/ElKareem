@@ -17,6 +17,7 @@
     "esbuild": "^0.28.2",
     "exceljs": "^4.4.0",
     "pg": "^8.23.1",
+    "qrcode-generator": "^1.4.4",
     "typescript": "^7.0.2",
     "vitest": "^5.1.2"
   }

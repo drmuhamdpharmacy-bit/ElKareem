@@ -176,7 +176,7 @@ async function auth(req, res, url) {
 // ------------------------------------------------------------------ static files (real repo files, local URLs patched in)
 const MIME = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css', png: 'image/png', json: 'application/json' };
 function staticFile(res, pathname) {
-  const map = { '/vendor/supabase.js': join(NM, '@supabase/supabase-js/dist/umd/supabase.js'), '/vendor/exceljs.min.js': join(NM, 'exceljs/dist/exceljs.min.js') };
+  const map = { '/vendor/supabase.js': join(NM, '@supabase/supabase-js/dist/umd/supabase.js'), '/vendor/exceljs.min.js': join(NM, 'exceljs/dist/exceljs.min.js'), '/vendor/qrcode.js': join(NM, 'qrcode-generator/qrcode.js') };
   const name = pathname === '/' ? '/index.html' : pathname;
   const file = map[name] || join(REPO, name.replace(/^\/+/, ''));
   if (!file.startsWith(REPO) && !map[name]) return send(res, 403, {});
@@ -186,7 +186,8 @@ function staticFile(res, pathname) {
     buf = Buffer.from(buf.toString()
       .replace(/https:\/\/cdn\.jsdelivr\.net\/npm\/@supabase\/supabase-js@2/, '/vendor/supabase.js')
       .replace(/const SUPABASE_URL = '[^']+'/, `const SUPABASE_URL = 'http://localhost:${PORT}'`)
-      .replace(/const SUPABASE_KEY = '[^']+'/, `const SUPABASE_KEY = '${ANON}'`));
+      .replace(/const SUPABASE_KEY = '[^']+'/, `const SUPABASE_KEY = '${ANON}'`)
+      .replace(/https:\/\/cdn\.jsdelivr\.net\/npm\/qrcode-generator@[^']+/, '/vendor/qrcode.js'));
   }
   if (name === '/finance.js') buf = Buffer.from(buf.toString().replace(/https:\/\/cdn\.jsdelivr\.net\/npm\/exceljs@[^']+/, '/vendor/exceljs.min.js'));
   res.writeHead(200, { 'Content-Type': MIME[name.split('.').pop()] || 'application/octet-stream', 'Cache-Control': 'no-store' });
