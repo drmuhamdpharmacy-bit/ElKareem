@@ -13,7 +13,7 @@
 //  Loaded BEFORE the main script, like crm.js; it only uses the main script's globals when it runs.
 // ════════════════════════════════════════════════════════════════════
 const FIN = (() => {
-  const ENGINE_URL = 'finance-engine.js?v=1';
+  const ENGINE_URL = 'finance-engine.js?v=2';
   const EXCELJS_URL = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
   const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
   const MONTHS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -374,6 +374,8 @@ const FIN = (() => {
     return `<div class="fin-title"><h2>🧾 ${T('قائمة الدخل المجمعة', 'Consolidated P&L')}</h2><span>${T('الفروع + المصروفات المشتركة (عمود مستقل – لا توزيع تلقائي)', 'Branches + shared expenses (separate column – never allocated)')}</span><span style="flex:1"></span>${xbtn('consolidated')}${pbtn()}</div>
       <div class="grid-2">${card(T('شهر التقرير', 'Report month'), table(Eng.consolidatedSideBySide(r, 'month')))}${card(T('من بداية السنة', 'Year to date'), table(Eng.consolidatedSideBySide(r, 'ytd')))}</div>
       ${card(T('قائمة الدخل المجمعة شهريًا', 'Monthly consolidated P&L'), table(Eng.consolidatedMonthlyTable(r)))}
+      ${card(`📦 ${T('دوران المخزون المجمع', 'Consolidated inventory turnover')}`, table(Eng.consolidatedTurnoverTable(r, S.lang)), xbtn('turnover-consolidated'))}
+      ${card(T('دوران المخزون المجمع ربع السنوي', 'Consolidated quarterly turnover'), table(Eng.consolidatedTurnoverQuarterTable(r, S.lang)))}
       ${card(`${T('توزيع المشترك حسب حصة المبيعات', 'Shared allocation by share of sales')} — <span style="color:var(--warn)">${T('محاكاة فقط – لا تُسجل', 'simulation only – never posted')}</span>`,
         `<div class="table-wrap"><table class="fin-rt"><thead><tr><th>${T('الفرع', 'Branch')}</th><th>${T('صافي المبيعات YTD', 'Net sales YTD')}</th><th>${T('الحصة', 'Share')}</th><th>${T('نصيب المشترك', 'Allocated')}</th></tr></thead><tbody>
         ${alloc.map(a => `<tr><td>${esc(bname(d, a.branchId))}</td><td class="n">${fmt(a.netSales.toNumber())}</td><td class="n">${fmt(a.share.toNumber(), 'pct')}</td><td class="n">${fmt(a.allocated.toNumber())}</td></tr>`).join('')}</tbody></table></div>`)}`;
@@ -912,7 +914,8 @@ const FIN = (() => {
     const d = S.data, r = d.result, Eng = E(), b = args.b ? r.branches.find(x => x.branchId === args.b) : null, cats = d.ds.expenseCategories, rs = d.ds.adjustmentReasons;
     switch (id) {
       case 'dashboard': return [Eng.consolidatedSideBySide(r, 'month'), Eng.consolidatedSideBySide(r, 'ytd'), Eng.comparisonTable(r)];
-      case 'consolidated': return [Eng.consolidatedSideBySide(r, 'month'), Eng.consolidatedSideBySide(r, 'ytd'), Eng.consolidatedMonthlyTable(r)];
+      case 'consolidated': return [Eng.consolidatedSideBySide(r, 'month'), Eng.consolidatedSideBySide(r, 'ytd'), Eng.consolidatedMonthlyTable(r), Eng.consolidatedTurnoverTable(r, S.lang), Eng.consolidatedTurnoverQuarterTable(r, S.lang)];
+      case 'turnover-consolidated': return [Eng.consolidatedTurnoverTable(r, S.lang), Eng.consolidatedTurnoverQuarterTable(r, S.lang)];
       case 'comparison': return [Eng.comparisonTable(r)];
       case 'checks': return [checksTable(d.checks.checks)];
       case 'pl': return [Eng.branchPLTable(b)];
