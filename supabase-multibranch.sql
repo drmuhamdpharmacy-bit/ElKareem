@@ -49,6 +49,7 @@ declare
   v_now  bigint := floor(extract(epoch from clock_timestamp()) / 30)::bigint;
   v_br   jsonb;
   v_dist double precision;
+  v_geo  boolean;            -- check the location for this check-in?
   v_last record;
   v_kind text;
   v_open boolean;
@@ -66,12 +67,19 @@ begin
   if v_win < v_now - 4 or v_win > v_now + 1 then raise exception 'expired_code'; end if;
 
   v_br := public._branch(v_tb);
-  if coalesce(v_br ->> 'lat', '') <> '' and coalesce(v_br ->> 'lng', '') <> '' then
-    if p_lat is null or p_lng is null then raise exception 'location_required'; end if;
+  -- The location is checked only when the branch has one saved, the owner has not switched the check off
+  -- for the branch («التحقق من الموقع»), and the employee is not exempt («بدون التحقق من الموقع»).
+  v_geo := coalesce(v_br ->> 'lat', '') <> '' and coalesce(v_br ->> 'lng', '') <> ''
+           and coalesce((v_br ->> 'geo')::boolean, true)
+           and not exists (select 1 from public.app_store s, jsonb_array_elements(s.data) e
+                            where s.id = v_tb || '/employees' and jsonb_typeof(s.data) = 'array'
+                              and e ->> 'id' = v_emp and coalesce((e ->> 'noGeo')::boolean, false));
+  if v_geo and (p_lat is null or p_lng is null) then raise exception 'location_required'; end if;
+  if coalesce(v_br ->> 'lat', '') <> '' and coalesce(v_br ->> 'lng', '') <> '' and p_lat is not null and p_lng is not null then
     v_dist := 2 * 6371000 * asin(sqrt(
         power(sin(radians(p_lat - (v_br ->> 'lat')::float8) / 2), 2)
       + cos(radians((v_br ->> 'lat')::float8)) * cos(radians(p_lat)) * power(sin(radians(p_lng - (v_br ->> 'lng')::float8) / 2), 2)));
-    if v_dist > coalesce(nullif(v_br ->> 'radius', '')::float8, 150) then
+    if v_geo and v_dist > coalesce(nullif(v_br ->> 'radius', '')::float8, 150) then
       raise exception 'too_far:%', round(v_dist);
     end if;
   end if;
