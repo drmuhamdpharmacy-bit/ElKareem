@@ -1921,7 +1921,7 @@ function renderBranchesCard(){
       <td><input type="number" class="br-shift" data-id="${esc(b.id)}" value="${b.shift??8}" min="1" max="16" style="width:70px"></td>
       <td><input type="number" class="br-free" data-id="${esc(b.id)}" value="${b.free_forgets??2}" min="0" style="width:70px"></td>
       <td><input type="number" class="br-pen" data-id="${esc(b.id)}" value="${b.forget_penalty??0.5}" min="0" step="0.25" style="width:70px"></td>
-      <td>${users.some(u=>u.role==='kiosk'&&u.branch===b.id)?'<span class="badge badge-green">✅ موجود</span>':`<button class="btn btn-gold btn-xs" data-kiosk-acc="${esc(b.id)}">📺 إنشاء حساب الشاشة</button>`}</td></tr>`).join('')}
+      <td>${users.some(u=>u.role==='kiosk'&&u.branch===b.id)?'<span class="badge badge-green">✅ موجود</span>':`<button class="btn btn-gold btn-xs" data-kiosk-acc="${esc(b.id)}">📺 إنشاء حساب الشاشة</button>`}${branches.length>1?`<div style="margin-top:6px"><button class="btn btn-ghost btn-xs" style="color:var(--danger)" data-br-del="${esc(b.id)}" title="حذف فرع أُضيف بالخطأ (فارغ فقط)">🗑 حذف الفرع</button></div>`:''}</td></tr>`).join('')}
     </tbody></table></div></div>`;
 }
 function collectBranchInputs(){
@@ -2239,6 +2239,36 @@ function bindEvents(){
     if(!pos){btn.disabled=false;btn.textContent='📍 موقعي الحالي';showToast('تعذّر تحديد الموقع — اسمح للمتصفح بالوصول للموقع','error');return}
     const b=branches.find(x=>x.id===btn.dataset.brLocate);b.lat=+pos.lat.toFixed(6);b.lng=+pos.lng.toFixed(6);
     saveAll();render();showToast(`تم حفظ موقع ${b.name} ✓ (دقة ±${Math.round(pos.acc)} م)`);
+  }});
+  // delete a branch added by mistake — only when it is still completely empty
+  document.querySelectorAll('[data-br-del]').forEach(btn=>{btn.onclick=async()=>{
+    collectBranchInputs();
+    const id=btn.dataset.brDel,b=branches.find(x=>x.id===id),d=branchData[id]||{};if(!b)return;
+    if(branches.length<=1){showToast('لا يمكن حذف الفرع الوحيد','error');return}
+    btn.disabled=true;btn.textContent='⏳ …';
+    const why=[];
+    if((d.employees||[]).length)why.push(`${d.employees.length} موظف`);
+    const used=k=>{const v=d[k];return v&&(Array.isArray(v)?v.length:Object.values(v).some(x=>Array.isArray(x)?x.length:x&&typeof x==='object'?Object.keys(x).length:x))};
+    if(used('missions'))why.push('مهام');if(used('bonuses')||used('penalties'))why.push('مكافآت أو جزاءات');if(used('withdrawals'))why.push('مسحوبات');if((d.messages||[]).length)why.push('رسائل');
+    if(Object.values(d.monthly_data||{}).some(m=>m&&((m.sales||0)>0||Object.keys(m.hours||{}).length)))why.push('بيانات شهرية');
+    const acc=users.filter(u=>u.branch===id&&u.role!=='kiosk');if(acc.length)why.push(`${acc.length} حساب مستخدم`);
+    const cnt=async(t,col)=>{const{count,error}=await sb.from(t).select('id',{count:'exact',head:true}).eq(col,id);return error?0:(count||0)};
+    if(await cnt('checkins','branch'))why.push('تسجيلات حضور');
+    if(await cnt('leave_requests','branch'))why.push('طلبات إجازة');
+    if(await cnt('fin_branches','app_branch'))why.push('مربوط بفرع في قسم المالية');
+    btn.disabled=false;btn.textContent='🗑 حذف الفرع';
+    if(why.length){alert(`لا يمكن حذف «${b.name}» لأنه يحتوي على: ${why.join('، ')}.\n\nإذا أُضيف بالخطأ وبه بيانات قليلة، غيّر اسمه واستخدمه، أو تواصل مع المطوّر.`);return}
+    if(!confirm(`حذف «${b.name}» نهائياً؟\nالفرع فارغ — لا موظفين ولا بيانات.`))return;
+    const kiosk=users.filter(u=>u.branch===id&&u.role==='kiosk');
+    for(const u of kiosk){const{error}=await sb.rpc('admin_delete_user',{p_uid:u.id});if(error){showToast('تعذّر حذف حساب شاشة الحضور لهذا الفرع — احذفه من «إدارة المستخدمين» ثم أعد المحاولة','error');return}}
+    branches=branches.filter(x=>x.id!==id);delete branchData[id];
+    if(state.branch===id)useBranch(branches[0].id);
+    await saveAll();
+    await sb.from('app_store').delete().like('id',id+'/%');
+    await sb.from('emp_view').delete().eq('emp_id','_lb/'+id);
+    STORE_KEYS.forEach(k=>{delete _synced[`${id}/${k}`]});
+    if(kiosk.length)await loadUsers();
+    render();showToast(`تم حذف «${b.name}» ✓`);
   }});
   document.querySelectorAll('[data-br-clearloc]').forEach(btn=>{btn.onclick=()=>{collectBranchInputs();const b=branches.find(x=>x.id===btn.dataset.brClearloc);delete b.lat;delete b.lng;saveAll();render();showToast('تم إلغاء شرط الموقع')}});
   document.querySelectorAll('[data-kiosk-acc]').forEach(btn=>{btn.onclick=async()=>{
