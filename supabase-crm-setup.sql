@@ -558,6 +558,8 @@ $$;
 --     still open after its due date = 0 (charged to the employee it is assigned to).
 --   Credit goes to whoever recorded the result. Cancelled follow-ups are ignored.
 --   No follow-ups in a month -> no score (the KPI keeps its neutral default).
+--   14-day rule (owner's decision): an employee who had follow-ups due to them in the last 14 days of the
+--   month (or up to today) and recorded NO result at all in those 14 days gets 0 for that month.
 create or replace function crm_kpi(p_from date, p_to date) returns table(
   emp_id text, year int, month0 int, due int, on_time int, late int, no_answer int, postponed int, overdue int, score int)
 language sql stable security definer set search_path = public as $$
@@ -574,16 +576,28 @@ language sql stable security definer set search_path = public as $$
     from crm_followups f
     where f.due_date between p_from and p_to and f.status <> 'cancelled'
   )
-  select who, extract(year from due_date)::int, extract(month from due_date)::int - 1,
-         count(*)::int,
-         count(*) filter (where pts = 100)::int, count(*) filter (where pts = 60)::int,
-         count(*) filter (where pts in (80, 50))::int, count(*) filter (where pts = 70)::int,
-         count(*) filter (where pts = 0)::int,
-         round(avg(pts))::int
-  from f
-  where pts is not null and who is not null
-    and (crm_is_staff() or who = crm_me_emp())
-  group by 1, 2, 3
+  , g as (
+    select who, extract(year from due_date)::int as y, extract(month from due_date)::int - 1 as m0,
+           count(*)::int as due,
+           count(*) filter (where pts = 100)::int as on_time, count(*) filter (where pts = 60)::int as late,
+           count(*) filter (where pts in (80, 50))::int as no_answer, count(*) filter (where pts = 70)::int as postponed,
+           count(*) filter (where pts = 0)::int as overdue,
+           round(avg(pts))::int as score
+    from f
+    where pts is not null and who is not null
+      and (crm_is_staff() or who = crm_me_emp())
+    group by 1, 2, 3
+  )
+  select g.who, g.y, g.m0, g.due, g.on_time, g.late, g.no_answer, g.postponed, g.overdue,
+         case when exists (select 1 from crm_followups x
+                            where x.assigned_emp = g.who and x.status <> 'cancelled'
+                              and x.due_date between w.e - 13 and w.e)
+               and not exists (select 1 from crm_followups x
+                                where x.done_by_emp = g.who and x.done_at is not null
+                                  and (x.done_at at time zone 'Africa/Cairo')::date between w.e - 13 and w.e)
+              then 0 else g.score end
+  from g
+  cross join lateral (select least((make_date(g.y, g.m0 + 1, 1) + interval '1 month - 1 day')::date, crm_today()) as e) w
 $$;
 
 -- ---------------------------------------------------------------- owner tools
