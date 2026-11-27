@@ -483,13 +483,19 @@ function excusesOf(empId,mk,b=state.branch){
   if(isStaff())return((mdOf(b)[mk]||{}).lateExcuse||{})[empId]||[];
   const v=(myView&&b!==myView.emp?.branch&&myOtherViews?.[b])||myView;return(v?.months?.[mk]?.lateExcused)||[];
 }
+// ── Days without lateness for the whole branch (owner): e.g. the first day of the new system.
+// Nobody's lateness counts that day, and it does not use anyone's monthly «إذن تأخير».
+function lateFreeOf(mk,b=state.branch){
+  if(isStaff())return(mdOf(b)[mk]||{}).lateFree||[];
+  const v=(myView&&b!==myView.emp?.branch&&myOtherViews?.[b])||myView;return(v?.months?.[mk]?.lateFree)||[];
+}
 function autoAtt(empId,mk,b=state.branch,emp){
   const rows=attRowsFor(b,mk);if(!rows)return null;
   const mine=rows.filter(r=>r.emp_id===empId);if(!mine.length)return null;
-  const e=emp||employees.find(x=>x.id===empId)||{},cfg=branchCfg(b),exc=new Set(excusesOf(empId,mk,b).map(x=>x.date));
-  let late=0,lm=0,mins=0,forgot=0,fixed=0,open=0,excused=0;const excDays=new Set();
-  mine.forEach(r=>{mins+=r.minutes||0;forgot+=r.forgot||0;fixed+=r.fixed||0;open+=r.open||0;const x=lateMinutesFor(r.first_in,e.scheduledTime,cfg.grace);if(x){if(exc.has(r.day)){excused++;excDays.add(r.day)}else{late++;lm+=x}}});
-  return{days:mine.length,late,lateMin:lm,excused,excDays,mins,hrs:Math.round(mins/60*100)/100,forgot,fixed,open,rows:mine.sort((a,b)=>a.day<b.day?-1:1)};
+  const e=emp||employees.find(x=>x.id===empId)||{},cfg=branchCfg(b),exc=new Set(excusesOf(empId,mk,b).map(x=>x.date)),free=new Set(lateFreeOf(mk,b).map(x=>x.date));
+  let late=0,lm=0,mins=0,forgot=0,fixed=0,open=0,excused=0;const excDays=new Set(),freeDays=new Set();
+  mine.forEach(r=>{mins+=r.minutes||0;forgot+=r.forgot||0;fixed+=r.fixed||0;open+=r.open||0;const x=lateMinutesFor(r.first_in,e.scheduledTime,cfg.grace);if(x){if(free.has(r.day))freeDays.add(r.day);else if(exc.has(r.day)){excused++;excDays.add(r.day)}else{late++;lm+=x}}});
+  return{days:mine.length,late,lateMin:lm,excused,excDays,freeDays,mins,hrs:Math.round(mins/60*100)/100,forgot,fixed,open,rows:mine.sort((a,b)=>a.day<b.day?-1:1)};
 }
 // Forgotten check-outs: the first `free_forgets` per month are free, each extra one costs `forget_penalty` of a normal day's pay.
 function forgotPenalty(emp,a,cfg,waived){
@@ -700,7 +706,7 @@ function empMonthStats(emp,mk){
   const md=getMonthData(mk),commData=calcCommission(md.sales||0,mk),hrs=(md.hours||{})[emp.id]||0,sal=calcSalary(emp,hrs);
   const comm=emp.commPct>0?commData.pool*(emp.commPct/100):0,{total:bt}=getEmpBonuses(emp.id,mk),{total:pt}=getEmpPenalties(emp.id,mk);
   const a=autoAtt(emp.id,mk),fp=forgotPenalty(emp,a,branchCfg(),isWaived(emp.id,mk)),w=getEmpWithdrawals(emp.id,mk),wd=w.total;
-  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,salesPct:salesShare(md,emp.id),commOff:!!commData.off,lateExcused:excusesOf(emp.id,mk).map(x=>({date:x.date,note:x.note||''})),badges:empBadges(emp.id,mk).map(x=>{const b=badgeOf(x);return{k:b.k,icon:b.icon,name:b.name,desc:b.desc,note:x.note||''}}),commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
+  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,salesPct:salesShare(md,emp.id),commOff:!!commData.off,lateExcused:excusesOf(emp.id,mk).map(x=>({date:x.date,note:x.note||''})),lateFree:lateFreeOf(mk).map(x=>({date:x.date,note:x.note||''})),badges:empBadges(emp.id,mk).map(x=>{const b=badgeOf(x);return{k:b.k,icon:b.icon,name:b.name,desc:b.desc,note:x.note||''}}),commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
 }
 // employee's share of the branch's total sales for the month (0 when the employee has no sales entered)
 function salesShare(md,empId){const es=(md.empSales||{})[empId]||0,tot=(md.sales||0)||Object.values(md.empSales||{}).reduce((t,v)=>t+(+v||0),0);return es>0&&tot>0?Math.round(es/tot*1000)/10:0}
@@ -918,6 +924,10 @@ function render(){
   const sbEl=document.getElementById('sidebar');if(sbEl&&sbScroll)sbEl.scrollTop=sbScroll;
   bindEvents();
   if(state.page==='kiosk')startKiosk();else stopKiosk();
+}
+function lateFreeListHTML(mk){
+  const list=lateFreeOf(mk);if(!list.length)return'';
+  return`<div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px"><strong>🕊️ أيام بدون تأخير لكل الفرع:</strong> ${list.map(x=>`<span class="badge badge-green" style="margin:2px">${fmtDay(x.date)}${x.note?' — '+esc(x.note):''}${isOwner()?` <button class="btn btn-ghost btn-xs" style="padding:0 6px" data-del-latefree="${esc(x.date)}" title="إلغاء">×</button>`:''}</span>`).join(' ')}</div>`;
 }
 function notifBarHTML(n){return`<div class="notif-bar type-${n.type}"><span style="font-size:16px">${n.icon}</span><span>${esc(n.msg)}</span><button class="notif-close" data-dismiss="${n.id}">✕</button></div>`}
 
@@ -1677,8 +1687,8 @@ function renderMyCheckin(){
   if(withAtt.length){
     summary=withAtt.map(({a,me,cfg,name})=>{const fp=forgotPenalty(me,a,cfg,false);return(multi?`<div style="font-weight:800;margin:10px 0 6px">🏢 ${esc(name)}</div>`:'')+`<div class="stats-row"><div class="stats-row-item"><div class="val">${a.days}</div><div class="lbl">أيام الحضور</div></div><div class="stats-row-item"><div class="val" style="color:var(--brand)">${fmtNum(a.hrs,1)}</div><div class="lbl">ساعات العمل</div></div><div class="stats-row-item"><div class="val" style="color:${a.late?'var(--warn)':'var(--success)'}">${a.late}</div><div class="lbl">أيام التأخير (${fmtMins(a.lateMin)})</div></div><div class="stats-row-item"><div class="val" style="color:${fp.extra?'var(--danger)':fp.count?'var(--warn)':'var(--success)'}">${fp.count}</div><div class="lbl">نسيان الانصراف (المسموح ${cfg.free_forgets})</div></div></div>
       ${fp.extra?`<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--danger)">⚠️ تجاوزت ${cfg.free_forgets} مرات نسيان هذا الشهر — جزاء ${fmtNum(fp.per,2)} ج.م عن كل مرة إضافية (${fp.extra})</div>`:fp.count?`<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--gold2)">تنبيه: نسيت تسجيل الانصراف ${fp.count} مرة هذا الشهر. المسموح ${cfg.free_forgets} مرات بدون جزاء.</div>`:''}`}).join('');
-    const allRows=withAtt.flatMap(x=>x.a.rows.map(r=>({...r,_bn:x.name,_cfg:x.cfg,_exc:x.a.excDays.has(r.day)}))).sort((x,y)=>x.day===y.day?(x.first_in<y.first_in?1:-1):(x.day<y.day?1:-1));
-    list=`<div class="table-wrap"><table><thead><tr><th>اليوم</th>${multi?'<th>الفرع</th>':''}<th>حضور</th><th>انصراف</th><th>المدة</th></tr></thead><tbody>${allRows.map(r=>`<tr><td>${fmtDay(r.day)}</td>${multi?`<td style="font-size:12px;font-weight:700">${esc(r._bn)}</td>`:''}<td dir="ltr">${r.first_in?fmtTime(r.first_in):'—'}</td><td dir="ltr">${r.last_out?fmtTime(r.last_out):'—'}</td><td>${r.minutes?fmtMins(r.minutes):'—'}</td></tr>${r._exc?`<tr class="day-flags"><td colspan="${multi?5:4}"><span class="badge badge-blue">⏰ تأخير بإذن — لا يُحسب تأخيراً</span></td></tr>`:''}${(r.open||r.forgot||r.fixed)?`<tr class="day-flags"><td colspan="${multi?5:4}">${r.open?'<span class="badge badge-green">🟢 حاضر الآن</span>':''}${r.forgot?(pendingIn.has(String(r.forgot_in))?'<span class="badge badge-gold">⏳ طلب التعديل في الانتظار</span>':`<span class="badge badge-red">نسيت الانصراف — احتُسبت ${r._cfg.shift} ساعات</span> <button class="btn btn-ghost btn-xs" data-fix-in="${r.forgot_in}" data-fix-day="${esc(r.first_in)}">📝 أدخل وقت خروجي</button>`):''}${r.fixed?'<span class="badge badge-blue">✔️ تم تعديل الانصراف</span>':''}</td></tr>`:''}`).join('')}</tbody></table></div>`;
+    const allRows=withAtt.flatMap(x=>x.a.rows.map(r=>({...r,_bn:x.name,_cfg:x.cfg,_exc:x.a.excDays.has(r.day),_free:x.a.freeDays.has(r.day)}))).sort((x,y)=>x.day===y.day?(x.first_in<y.first_in?1:-1):(x.day<y.day?1:-1));
+    list=`<div class="table-wrap"><table><thead><tr><th>اليوم</th>${multi?'<th>الفرع</th>':''}<th>حضور</th><th>انصراف</th><th>المدة</th></tr></thead><tbody>${allRows.map(r=>`<tr><td>${fmtDay(r.day)}</td>${multi?`<td style="font-size:12px;font-weight:700">${esc(r._bn)}</td>`:''}<td dir="ltr">${r.first_in?fmtTime(r.first_in):'—'}</td><td dir="ltr">${r.last_out?fmtTime(r.last_out):'—'}</td><td>${r.minutes?fmtMins(r.minutes):'—'}</td></tr>${r._free?`<tr class="day-flags"><td colspan="${multi?5:4}"><span class="badge badge-green">🕊️ يوم بدون تأخير لكل الفرع — لا يُحسب تأخيراً</span></td></tr>`:r._exc?`<tr class="day-flags"><td colspan="${multi?5:4}"><span class="badge badge-blue">⏰ تأخير بإذن — لا يُحسب تأخيراً</span></td></tr>`:''}${(r.open||r.forgot||r.fixed)?`<tr class="day-flags"><td colspan="${multi?5:4}">${r.open?'<span class="badge badge-green">🟢 حاضر الآن</span>':''}${r.forgot?(pendingIn.has(String(r.forgot_in))?'<span class="badge badge-gold">⏳ طلب التعديل في الانتظار</span>':`<span class="badge badge-red">نسيت الانصراف — احتُسبت ${r._cfg.shift} ساعات</span> <button class="btn btn-ghost btn-xs" data-fix-in="${r.forgot_in}" data-fix-day="${esc(r.first_in)}">📝 أدخل وقت خروجي</button>`):''}${r.fixed?'<span class="badge badge-blue">✔️ تم تعديل الانصراف</span>':''}</td></tr>`:''}`).join('')}</tbody></table></div>`;
   }
   const openNow=withAtt.flatMap(x=>x.a.rows.filter(r=>r.open).map(r=>({...r,_bn:x.name})))[0]||null;
   return`${top}
@@ -1704,7 +1714,7 @@ function checkinsCard(){
     `<div class="table-wrap"><table><thead><tr><th>الموظف</th><th>أيام</th><th>ساعات العمل</th><th>أيام التأخير</th><th>مجموع التأخير</th><th>نسيان الانصراف</th><th>الجزاء</th><th>إلغاء الجزاء</th><th>الآن</th></tr></thead><tbody>${rows.map(({e,a})=>{const fp=forgotPenalty(e,a,cfg,isWaived(e.id,mk));return`<tr><td style="font-weight:700">${esc(e.name)}</td><td>${a.days}</td><td style="font-weight:800;color:var(--brand)">${fmtNum(a.hrs,2)}</td><td style="color:${a.late?'var(--warn)':'var(--success)'}">${a.late}${a.excused?` <span style="font-size:11px;color:var(--text2)">(+${a.excused} بإذن)</span>`:''}</td><td>${fmtMins(a.lateMin)}</td><td style="color:${fp.extra?'var(--danger)':fp.count?'var(--warn)':'var(--text2)'}">${fp.count} / ${cfg.free_forgets}</td><td style="color:var(--danger)">${fp.extra?(fp.waived?'<s>'+fmtNum(fp.extra*fp.per,2)+'</s>':fmtNum(fp.amount,2)+' ج.م'):'—'}</td><td>${fp.extra?`<label class="toggle-switch"><input type="checkbox" class="forgot-waive" data-id="${esc(e.id)}" ${fp.waived?'checked':''}><span class="toggle-slider"></span></label>`:''}</td><td>${a.open?'<span class="badge badge-green">🟢 حاضر</span>':''}</td></tr>`}).join('')}</tbody></table></div>
     ${raw?`<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--accent);font-weight:700;font-size:13px">عرض كل التسجيلات (${raw.length})</summary>
       <div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>اليوم</th><th>الوقت</th><th>الموظف</th><th>النوع</th><th>المصدر</th><th>المسافة</th>${isOwner()?'<th></th>':''}</tr></thead><tbody>${[...raw].reverse().map(r=>`<tr><td>${fmtDay(cairo(r.at).date)}</td><td dir="ltr">${fmtTime(r.at)}</td><td>${esc(r.emp_name||r.emp_id)}</td><td>${r.kind==='in'?'🟢 حضور':'🔴 انصراف'}</td><td style="font-size:12px">${src[r.source]||'📱 كود'}${r.note?` — ${esc(r.note)}`:''}</td><td>${r.dist_m!=null?fmtNum(r.dist_m)+' م':'—'}</td>${isOwner()?`<td><button class="btn btn-danger btn-xs" data-del-checkin="${r.id}">🗑</button></td>`:''}</tr>`).join('')}</tbody></table></div></details>`:''}`;
-  return`<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>⏱️ الحضور والساعات التلقائية — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()}</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" id="refresh-checkins-btn">🔄 تحديث</button><button class="btn btn-primary btn-sm" id="add-checkin-btn">➕ إضافة تسجيل يدوي</button></div></div>
+  return`<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>⏱️ الحضور والساعات التلقائية — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()}</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" id="refresh-checkins-btn">🔄 تحديث</button><button class="btn btn-primary btn-sm" id="add-checkin-btn">➕ إضافة تسجيل يدوي</button>${isOwner()?'<button class="btn btn-gold btn-sm" id="add-latefree-btn">🕊️ إلغاء التأخير ليوم للفرع كله</button>':''}</div></div>${lateFreeListHTML(mk)}
     <p style="color:var(--text2);font-size:12px;margin-bottom:12px">تُحسب تلقائياً من مسح الكود وتدخل مباشرة في الرواتب. الوردية العادية ${cfg.shift} ساعات · سماح التأخير ${cfg.grace} دقيقة · نسيان الانصراف: ${cfg.free_forgets} مرات مجاناً ثم جزاء ${cfg.forget_penalty} يوم عن كل مرة (تُعدّل من الإعدادات ← الفروع).</p>${body}</div>`;
 }
 async function fillAttendanceFromCheckins(){
@@ -1948,6 +1958,12 @@ function renderModal(){
         • ${acc.length?`حساب الدخول (${acc.map(u=>esc(u.username)).join('، ')}) ينتقل للفرع الجديد — يسجّل الحضور بكود الفرع الجديد.`:'لا يوجد حساب دخول مرتبط.'}<br>
         • لو اخترت «الشهر القادم» يبقى هذا الشهر في ${esc(branchName(state.branch))}.</div>
       <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="mv-save">🔁 نقل</button></div>`;
+  } else if(m.type==='add-latefree'){
+    content=`<div class="modal-header"><h3>🕊️ إلغاء التأخير ليوم للفرع كله</h3><button class="modal-close" id="modal-cancel">✕</button></div>
+      <p style="color:var(--text2);font-size:13px;margin-bottom:14px">كل من تأخر في هذا اليوم في <strong>${esc(branchName(state.branch))}</strong> لا يُحسب عليه تأخير، ولا يُخصم ذلك من أذونات التأخير الشهرية لأي موظف. الحضور والساعات تبقى كما هي.</p>
+      <div class="form-group"><label>اليوم</label><input type="date" id="lf-date" value="${todayCairo()}"></div>
+      <div class="form-group"><label>السبب (اختياري)</label><input id="lf-note" maxlength="120" value="أول يوم تشغيل للنظام"></div>
+      <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">💾 حفظ</button></div>`;
   } else if(m.type==='add-excuse'){
     content=`<div class="modal-header"><h3>⏰ إذن تأخير لموظف</h3><button class="modal-close" id="modal-cancel">✕</button></div>
       <div class="form-group"><label>الموظف</label><select id="modal-emp">${employees.map(e=>`<option value="${esc(e.id)}">${esc(e.name)} (${excusesOf(e.id,monthKey()).length} هذا الشهر${excusesOf(e.id,monthKey()).length>=LATE_WARN?' ⚠️':''})</option>`).join('')}</select></div>
@@ -2129,6 +2145,8 @@ function bindEvents(){
   document.querySelectorAll('[data-ck-kind]').forEach(b=>{b.onclick=()=>{const t=state.checkin?.token;if(t)doCheckin(t,b.dataset.ckKind)}});
   document.querySelectorAll('.forgot-waive').forEach(cb=>{cb.onchange=()=>{const mk=monthKey();if(!monthlyData[mk])monthlyData[mk]={sales:0,gp:0,np:0,hours:{},empSales:{}};const w=monthlyData[mk].forgotWaive||(monthlyData[mk].forgotWaive={});if(cb.checked)w[cb.dataset.id]=true;else delete w[cb.dataset.id];saveAll();render();showToast(cb.checked?'تم إلغاء جزاء النسيان لهذا الشهر':'تم تفعيل الجزاء')}});
   document.getElementById('add-checkin-btn')?.addEventListener('click',()=>{state.modal={type:'add-checkin'};render()});
+  document.getElementById('add-latefree-btn')?.addEventListener('click',()=>{state.modal={type:'add-latefree'};render()});
+  document.querySelectorAll('[data-del-latefree]').forEach(btn=>{btn.onclick=()=>{const date=btn.dataset.delLatefree,d=monthlyData[payMonthKeyOf(date)];if(!d||!d.lateFree)return;if(!confirm(`إعادة حساب التأخير ليوم ${fmtDay(date)}؟`))return;d.lateFree=d.lateFree.filter(x=>x.date!==date);saveAll();render();showToast('تم الإلغاء ✓')}});
   document.querySelectorAll('[data-fix-in]').forEach(b=>{b.onclick=()=>{state.modal={type:'fix-out',inId:+b.dataset.fixIn,inAt:b.dataset.fixDay};render()}});
   document.querySelectorAll('[data-fix-cancel]').forEach(b=>{b.onclick=async()=>{const{error}=await sb.rpc('emp_cancel_fix',{p_id:+b.dataset.fixCancel});if(error){showToast(errMsg(error),'error');return}await loadFixes();render();showToast('تم إلغاء الطلب')}});
   const decideFix=async(id,st)=>{const{error}=await sb.rpc('decide_fix',{p_id:+id,p_status:st});if(error){showToast(errMsg(error),'error');return}await loadFixes();await ensureAtt(true);saveAll();render();showToast(st==='approved'?'تمت الموافقة ✓ — الساعات تحدّثت':'تم الرفض')};
@@ -2406,6 +2424,15 @@ function bindEvents(){
         }else{obj.amount=+$('modal-amount').value;if(!(obj.amount>0)){showToast('اكتب المبلغ','error');return}}
         if(mm.type==='add-bonus'){if(!bonuses[mk])bonuses[mk]=[];bonuses[mk].push(obj)}else{if(!penalties[mk])penalties[mk]=[];penalties[mk].push(obj)}
         saveAll();state.modal=null;render();showToast(`تم الحفظ ✓ — ${fmtNum(obj.amount,2)} ج.م`);
+      });
+    } else if(mm.type==='add-latefree'){
+      document.getElementById('modal-save')?.addEventListener('click',()=>{
+        const date=document.getElementById('lf-date').value,note=document.getElementById('lf-note').value.trim();
+        if(!date){showToast('اختر اليوم','error');return}
+        const mk=payMonthKeyOf(date),d=monthlyData[mk]||(monthlyData[mk]={sales:0,gp:0,np:0,hours:{},empSales:{}}),list=d.lateFree||(d.lateFree=[]);
+        if(list.some(x=>x.date===date)){showToast('هذا اليوم مسجّل بالفعل','error');return}
+        list.push({date,note,by:state.user.name});list.sort((a,b)=>a.date<b.date?-1:1);
+        saveAll();state.modal=null;render();showToast(`تم — لا يُحسب تأخير يوم ${fmtDay(date)} على أحد ✓`);
       });
     } else if(mm.type==='add-excuse'){
       document.getElementById('modal-save')?.addEventListener('click',()=>{
