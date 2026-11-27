@@ -264,6 +264,7 @@ label{font-size:12px;color:var(--text2);font-weight:700;display:block;margin-bot
 .shift-pm{background:rgba(245,166,35,.25);color:#92400e}
 .shift-off{background:rgba(100,116,139,.10);color:var(--text3)}
 .shift-split{background:rgba(16,185,129,.25);color:#15803d}
+@media(max-width:420px){.top-logout-label{display:none}}
 </style>
 </head>
 <body>
@@ -1028,7 +1029,7 @@ function renderSidebar(){
 // ══════════════════════════════════════════════
 function renderTopbar(){
   const labels={dashboard:'لوحة التحكم',monthly:'الإدخال الشهري',payroll:'كشف الرواتب',commission:'شفافية العمولة',employees:'إدارة الموظفين',attendance:'الحضور والتأخير',missions:'المهام والأهداف',bonuses:'المكافآت والجزاءات',withdrawals:'🛒 المسحوبات',kpi:'محرك KPI',leaderboard:'المتصدرون',insights:'التحليلات',messages:'الرسائل',settings:'الإعدادات',myperformance:'أدائي الشهري',mymissions:'مهامي',myattendance:'سجل حضوري',mymessages:'رسائلي',shifts:'جدول الورديات',mypassword:'كلمة المرور',leaves:'الإجازات والطلبات',kiosk:'📺 شاشة الحضور',audit:'سجل التغييرات',mycheckin:'الحضور وساعاتي',myleaves:'إجازاتي'};
-  return`<div class="topbar"><div class="topbar-left"><button class="hamburger" id="hamburger-btn">☰</button><h2>${labels[state.page]||CRM.label(state.page)||FIN.label(state.page)||''}</h2></div><div class="topbar-right">${NOTIF.bell()}${isOwner()&&Object.keys(branchData).length>1?`<select id="branch-sel" class="branch-sel">${Object.keys(branchData).map(b=>`<option value="${esc(b)}"${b===state.branch?' selected':''}>🏢 ${esc(branchName(b))}</option>`).join('')}</select>`:`<span class="badge badge-green" style="padding:6px 12px">🏢 ${esc(branchName(state.branch))}</span>`}<select id="year-sel" style="width:86px">${[2025,2026,2027,2028,2029,2030].map(y=>`<option value="${y}"${state.year===y?' selected':''}>${y}</option>`).join('')}</select><select id="month-sel" style="width:108px">${MONTHS_AR.map((m,i)=>`<option value="${i}"${state.month===i?' selected':''}>${m}</option>`).join('')}</select></div></div>`;
+  return`<div class="topbar"><div class="topbar-left"><button class="hamburger" id="hamburger-btn">☰</button><h2>${labels[state.page]||CRM.label(state.page)||FIN.label(state.page)||''}</h2></div><div class="topbar-right">${NOTIF.bell()}<button class="btn btn-ghost btn-sm" id="top-logout-btn" title="تسجيل الخروج" style="font-size:13px;padding:6px 10px;white-space:nowrap">🚪 <span class="top-logout-label">خروج</span></button>${isOwner()&&Object.keys(branchData).length>1?`<select id="branch-sel" class="branch-sel">${Object.keys(branchData).map(b=>`<option value="${esc(b)}"${b===state.branch?' selected':''}>🏢 ${esc(branchName(b))}</option>`).join('')}</select>`:`<span class="badge badge-green" style="padding:6px 12px">🏢 ${esc(branchName(state.branch))}</span>`}<select id="year-sel" style="width:86px">${[2025,2026,2027,2028,2029,2030].map(y=>`<option value="${y}"${state.year===y?' selected':''}>${y}</option>`).join('')}</select><select id="month-sel" style="width:108px">${MONTHS_AR.map((m,i)=>`<option value="${i}"${state.month===i?' selected':''}>${m}</option>`).join('')}</select></div></div>`;
 }
 
 // ══════════════════════════════════════════════
@@ -2091,6 +2092,7 @@ function bindEvents(){
   // Nav
   document.querySelectorAll('.nav-item[data-page]').forEach(el=>{el.onclick=()=>{state.page=el.dataset.page;render()}});
   document.getElementById('logout-btn')?.addEventListener('click',doLogout);
+  document.getElementById('top-logout-btn')?.addEventListener('click',()=>{if(confirm('تسجيل الخروج من التطبيق؟'))doLogout()});
   document.getElementById('hamburger-btn')?.addEventListener('click',()=>{
     const sb2=document.getElementById('sidebar');
     if(window.innerWidth<=640){sb2.classList.toggle('open')}else{state.sidebarOpen=!state.sidebarOpen;render()}
