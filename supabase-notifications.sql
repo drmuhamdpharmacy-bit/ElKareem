@@ -134,17 +134,17 @@ create or replace function public._notify_emp(p_emp text, p_branch text, p_kind 
   select public._notify_user(p.id, p_emp, p_branch, p_kind, p_title, p_body, p_url, p_ref)
     from public.profiles p where p.emp_id = p_emp and p.role in ('employee', 'senior') $$;
 
--- the supervisors of a branch (the owners when the branch has none)
+-- the supervisors of a branch + every owner (owners get a copy of everything the supervisors get)
 create or replace function public._notify_staff(p_branch text, p_kind text, p_title text, p_body text, p_url text, p_ref text)
  returns void language plpgsql security definer set search_path to 'public' as $$
+declare v_bname text := coalesce((select b ->> 'name' from public.app_store s, jsonb_array_elements(s.data) b
+                                   where s.id = 'branches' and jsonb_typeof(s.data) = 'array' and b ->> 'id' = p_branch), p_branch);
 begin
-  if exists (select 1 from public.profiles where role = 'senior' and branch = p_branch) then
-    perform public._notify_user(p.id, p.emp_id, p_branch, p_kind, p_title, p_body, p_url, p_ref)
-       from public.profiles p where p.role = 'senior' and p.branch = p_branch;
-  else
-    perform public._notify_user(p.id, null, p_branch, p_kind, p_title, p_body, p_url, p_ref)
-       from public.profiles p where p.role = 'owner';
-  end if;
+  perform public._notify_user(p.id, p.emp_id, p_branch, p_kind, p_title, p_body, p_url, p_ref)
+     from public.profiles p where p.role = 'senior' and p.branch = p_branch;
+  -- owners: the branch name in front, since they see all branches
+  perform public._notify_user(p.id, null, p_branch, p_kind, p_title, '🏢 ' || v_bname || ' — ' || p_body, p_url, p_ref)
+     from public.profiles p where p.role = 'owner';
 end $$;
 
 create or replace function public._emp_active_in(p_branch text, p_emp text) returns boolean language sql stable
