@@ -1099,13 +1099,14 @@ function missionCard(m,isEmployee,canUpload){
         ${empImg?`<div style="margin-top:10px;padding:10px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.25);border-radius:8px"><div style="font-size:11px;color:#15803d;margin-bottom:5px;font-weight:700">📷 صورة الموظف:</div><img src="${empImg}" style="width:100%;max-height:180px;object-fit:cover;border-radius:8px" alt="صورة الموظف"></div>`:''}
         <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           ${!isEmployee?`<span class="badge badge-blue">${esc(emp?.name||m.empId)}</span>`:''}
-          ${(()=>{const{start,due}=missionDates(m);return`<span class="badge badge-gray">📅 ${fmtDM(start)} ← ${fmtDM(due)}</span>`})()}${m.photoRequired?`<span class="badge ${empImg?'badge-green':'badge-red'}">📷 صورة إلزامية${empImg?' ✓':''}</span>`:''}
+          ${(()=>{const{start,due}=missionDates(m);return`<span class="badge badge-gray">📅 ${fmtDM(start)} ← ${fmtDM(due)}</span>`})()}${(m.postponed||[]).length?(p=>`<span class="badge badge-blue" title="${esc((m.postponed||[]).map(x=>`${fmtDM(x.from)} ← ${fmtDM(x.to)}: ${x.reason} (${x.by})`).join('\n'))}">⏸ أُجّلت${m.postponed.length>1?` ${m.postponed.length} مرات`:''} — ${esc(p.reason)}</span>`)(m.postponed[m.postponed.length-1]):''}${m.photoRequired?`<span class="badge ${empImg?'badge-green':'badge-red'}">📷 صورة إلزامية${empImg?' ✓':''}</span>`:''}
           ${m.score!==undefined?`<span class="badge badge-green">✅ التقييم: ${m.score}/100</span>`:m.completed?`<span class="badge badge-gold">⌛ منتهية — تنتظر التقييم</span>`:(st=>st==='late'?'<span class="badge badge-red">⏳ متأخرة — فات الموعد النهائي</span>':st==='upcoming'?'<span class="badge badge-blue">🗓️ لم تبدأ بعد</span>':'<span class="badge badge-gray">🔄 جارية</span>')(missionState(m))}
         </div>
         ${m.score!==undefined&&isEmployee?`<div style="margin-top:14px;padding:14px;background:var(--bg3);border-radius:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap"><div class="score-ring" style="border-color:${kpiColor(m.score)};color:${kpiColor(m.score)}">${m.score}</div><div><div style="font-size:14px;font-weight:800;color:${kpiColor(m.score)}">${kpiLabel(m.score)}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">درجتك في هذه المهمة</div>${m.scoredBy?`<div style="font-size:11px;color:var(--text3);margin-top:2px">قُيِّمت بواسطة: ${esc(m.scoredBy)}</div>`:''}</div></div>`:''}
       </div>
       <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
         ${!isEmployee&&m.score===undefined?`<button class="btn btn-success btn-sm" data-score-mission="${esc(m.id)}">⭐ تقييم</button>`:''}
+        ${!isEmployee&&!m.completed&&m.score===undefined?`<button class="btn btn-ghost btn-sm" data-postpone-mission="${esc(m.id)}">⏸ تأجيل</button>`:''}
         ${!isEmployee&&state.user.role==='owner'?`<button class="btn btn-danger btn-sm" data-del-mission="${esc(m.id)}">🗑</button>`:''}
         ${isEmployee&&!m.completed&&m.score===undefined?(m.photoRequired&&!empImg?`<button class="btn btn-success btn-sm" data-emp-upload-photo="${esc(m.id)}">📷 صوّر وأتمم</button>`:`<button class="btn btn-success btn-sm" data-complete-mission="${esc(m.id)}">✓ إتمام</button>`):''}
         ${isEmployee&&(canUpload||m.photoRequired)&&m.completed?`<button class="btn btn-gold btn-sm" data-emp-upload-photo="${esc(m.id)}">📷 ${empImg?'تغيير':'رفع صورة'}</button>`:''}
@@ -2049,6 +2050,13 @@ function renderModal(){
     _pendingImg=null;
     const ca=state.user.role==='owner'?employees:(SENIOR_ASSIGNS[state.user.empId]||employees.map(e=>e.id)).map(id=>employees.find(e=>e.id===id)).filter(Boolean);
     content=`<div class="modal-header"><h3>🎯 إضافة مهمة جديدة</h3><button class="modal-close" id="modal-cancel">✕</button></div><div class="form-group"><label>الموظف</label><select id="modal-emp">${ca.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('')}</select></div><div class="form-row"><div class="form-group"><label>عنوان المهمة</label><input id="modal-title" type="text"></div><div class="form-group"><label>يبدأ يوم</label><input type="date" id="modal-start" value="${todayCairo()}"></div><div class="form-group"><label>آخر موعد للإنجاز</label><input type="date" id="modal-due" value="${defaultTaskDue()}"></div></div><div class="form-group"><label>التفاصيل</label><textarea id="modal-desc" rows="3"></textarea></div><label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:14px;padding:10px 12px;background:var(--bg3);border-radius:8px;cursor:pointer;font-size:13px"><input type="checkbox" id="modal-photo-req" style="width:auto;margin-top:3px"><span><strong>📷 صورة إثبات إلزامية</strong><br><span style="color:var(--text2);font-size:12px">لا يستطيع الموظف إتمام المهمة إلا بعد تصوير ما قام به (مثل الترتيب والتنظيف)</span></span></label><div class="form-group"><label>صورة المهمة (اختياري — حتى 15MB)</label><div class="img-upload-area" id="img-drop-area" onclick="document.getElementById('mission-img-input').click()"><div id="img-preview-wrap"><div style="font-size:32px;margin-bottom:6px">📷</div><div style="font-size:13px">اضغط أو اسحب صورة هنا</div></div></div><input type="file" id="mission-img-input" accept="image/*" capture="environment" style="display:none"></div><div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">💾 حفظ</button></div>`;
+  } else if(m.type==='postpone-mission'){
+    const{start,due}=missionDates(m.mission),t=todayCairo();
+    content=`<div class="modal-header"><h3>⏸ تأجيل المهمة</h3><button class="modal-close" id="modal-cancel">✕</button></div>
+      <div style="background:var(--bg3);border-radius:10px;padding:12px;margin-bottom:14px"><div style="font-weight:800">${esc(m.mission.title)}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${esc((employees.find(e=>e.id===m.mission.empId)||{}).name||'')} · الموعد الحالي ${fmtDM(due)}</div></div>
+      <div class="form-row"><div class="form-group"><label>يبدأ يوم</label><input type="date" id="pp-start" value="${start>t?start:t}"></div><div class="form-group"><label>آخر موعد جديد</label><input type="date" id="pp-due" value="${addDays(due<t?t:due,7)}"></div></div>
+      <div class="form-group"><label>سبب التأجيل (يظهر للموظف)</label><input id="pp-reason" maxlength="150" placeholder="مثال: لم تصل البضاعة بعد"></div>
+      <div class="modal-footer"><button class="btn btn-ghost" id="modal-cancel-2">إلغاء</button><button class="btn btn-primary" id="modal-save">⏸ تأجيل</button></div>`;
   } else if(m.type==='score-mission'){
     content=`<div class="modal-header"><h3>⭐ تقييم المهمة</h3><button class="modal-close" id="modal-cancel">✕</button></div>
       <div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:16px"><div style="font-weight:800;margin-bottom:4px">${esc(m.mission.title)}</div><div style="font-size:12px;color:var(--text2)">${esc(m.mission.desc)}</div>${safeImg(m.mission.employeeImageData)?`<img src="${safeImg(m.mission.employeeImageData)}" style="width:100%;max-height:200px;object-fit:cover;border-radius:8px;margin-top:10px">`:''}</div>
@@ -2397,6 +2405,7 @@ function bindEvents(){
     state.modal={type:'add-mission'};render();
     setTimeout(()=>bindImgInput('mission-img-input','img-preview-wrap','owner'),50);
   });
+  document.querySelectorAll('[data-postpone-mission]').forEach(btn=>{btn.onclick=()=>{const mission=Object.values(missions).flat().find(m=>m&&m.id===btn.dataset.postponeMission);if(mission){state.modal={type:'postpone-mission',mission};render()}}});
   document.querySelectorAll('[data-score-mission]').forEach(btn=>{btn.onclick=()=>{const mk=monthKey(),mission=(missions[mk]||[]).find(m=>m.id===btn.dataset.scoreMission);state.modal={type:'score-mission',mission};render()}});
   document.querySelectorAll('[data-del-mission]').forEach(btn=>{btn.onclick=()=>{const mk=monthKey();missions[mk]=(missions[mk]||[]).filter(m=>m.id!==btn.dataset.delMission);saveAll();render()}});
   document.querySelectorAll('[data-complete-mission]').forEach(btn=>{btn.onclick=async()=>{
@@ -2587,6 +2596,18 @@ function bindEvents(){
         missions[mk].push({id:Date.now().toString(),empId:document.getElementById('modal-emp').value,title,desc:document.getElementById('modal-desc').value,start,due,week:Math.min(4,Math.floor((Date.parse(start)-Date.parse(payPeriod(...mk.split('-').map(Number)).from))/6048e5)+1),assignedBy:state.user.name,completed:false,seenByEmployee:false,imageData:_pendingImg||null,employeeImageData:null,photoRequired:!!document.getElementById('modal-photo-req')?.checked});
         {const nm=missions[mk][missions[mk].length-1];NOTIF.send(nm.empId,'task','🎯 مهمة جديدة',`${title} — آخر موعد ${fmtDM(due)}${nm.photoRequired?' — تحتاج صورة إثبات 📷':''}`,'?p=mymissions','task:'+nm.id)}
         _pendingImg=null;saveAll();state.modal=null;render();showToast(mk===monthKey()?'تم إضافة المهمة ✓':`تم إضافة المهمة ✓ — في شهر ${mkLabel(mk)} (حسب يوم البداية)`);
+      });
+    } else if(mm.type==='postpone-mission'){
+      document.getElementById('modal-save')?.addEventListener('click',()=>{
+        const start=document.getElementById('pp-start').value,due=document.getElementById('pp-due').value,reason=document.getElementById('pp-reason').value.trim();
+        if(!start||!due){showToast('اختر التاريخين','error');return}
+        if(due<start){showToast('آخر موعد يجب أن يكون بعد يوم البداية','error');return}
+        if(!reason){showToast('اكتب سبب التأجيل','error');return}
+        const mk=Object.keys(missions).find(k=>(missions[k]||[]).some(x=>x.id===mm.mission.id)),m=mk&&missions[mk].find(x=>x.id===mm.mission.id);if(!m)return;
+        const old=missionDates(m,mk);
+        m.start=start;m.due=due;(m.postponed||(m.postponed=[])).push({from:old.due,to:due,reason,by:state.user.name,at:new Date().toISOString()});
+        NOTIF.send(m.empId,'task','⏸ تم تأجيل مهمة',`${m.title} — الموعد الجديد ${fmtDM(due)} — السبب: ${reason}`,'?p=mymissions','postpone:'+m.id+':'+m.postponed.length);
+        saveAll();state.modal=null;render();showToast(`تم التأجيل إلى ${fmtDM(due)} ✓`);
       });
     } else if(mm.type==='score-mission'){
       document.getElementById('modal-save')?.addEventListener('click',()=>{
