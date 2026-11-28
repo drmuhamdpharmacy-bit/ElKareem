@@ -327,7 +327,9 @@ begin
   end if;
   if exists (select 1 from public.notifications where push_sent_at is null and send_after <= now())
      or not exists (select 1 from public.notif_private where k = 'vapid_public')
-     or exists (select 1 from public.tg_links where used_at is null and created_at > now() - interval '15 minutes') then
+     or exists (select 1 from public.tg_links where used_at is null and created_at > now() - interval '15 minutes')
+     -- Telegram bot not known yet (token just added): wake the sender every 5 minutes so it can set itself up
+     or (not exists (select 1 from public.notif_private where k = 'tg_bot') and extract(minute from now())::int % 5 = 0) then
     perform net.http_post(
       url     := 'https://hxckdhdwafdxjntuohlw.supabase.co/functions/v1/notify-dispatch',
       headers := jsonb_build_object('Content-Type', 'application/json',
