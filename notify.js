@@ -5,7 +5,7 @@
 //  Uses the app's globals: sb, state, render, showToast, esc.
 // ════════════════════════════════════════════════════════════════════
 const NOTIF = (() => {
-  const S = {rows: [], open: false, loaded: false, channel: null, pushState: null, pendingPage: null};
+  const S = {rows: [], open: false, loaded: false, channel: null, pushState: null, pendingPage: null, tg: null, tgWait: 0};
   const uid = () => state.user && state.user.id;
   const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -66,6 +66,35 @@ const NOTIF = (() => {
     } catch (e) { showToast(String(e.message || e), 'error'); }
   }
 
+  // ---------------------------------------------------------------- Telegram (free messages)
+  async function refreshTg() { const {data, error} = await sb.rpc('tg_status'); S.tg = error ? null : data; }
+  async function linkTelegram() {
+    const w = window.open('', '_blank');   // opened now (inside the tap) so the browser does not block it
+    const {data, error} = await sb.rpc('tg_link_start', {p_site: location.origin + location.pathname});
+    if (error) { if (w) w.close(); showToast(/tg_not_ready/.test(error.message) ? 'تيليجرام لم يُفعَّل بعد من الإدارة' : String(error.message), 'error'); return; }
+    const url = `https://t.me/${data.bot}?start=${data.code}`;
+    if (w) w.location.href = url; else location.href = url;
+    showToast('اضغط «Start» في تيليجرام — يتم الربط خلال دقيقة', 'info');
+    const t0 = Date.now(); S.tgWait = t0;
+    const poll = async () => {
+      if (S.tgWait !== t0 || Date.now() - t0 > 4 * 60 * 1000) return;
+      await refreshTg();
+      if (S.tg && S.tg.linked) { S.tgWait = 0; render(); showToast('✅ تم ربط تيليجرام — ستصلك الإشعارات هناك'); return; }
+      setTimeout(poll, 5000);
+    };
+    setTimeout(poll, 5000);
+  }
+  async function unlinkTelegram() {
+    if (!confirm('إلغاء ربط تيليجرام؟ لن تصلك الإشعارات هناك.')) return;
+    await sb.rpc('tg_unlink'); await refreshTg(); render(); showToast('تم إلغاء ربط تيليجرام');
+  }
+  function tgBox() {
+    if (!S.tg || !S.tg.ready) return '';
+    return `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">${S.tg.linked
+      ? '<div style="font-size:12px;color:#0369a1;display:flex;justify-content:space-between;align-items:center;gap:6px">✈️ تيليجرام مربوط — تصلك الإشعارات هناك أيضاً <button class="btn btn-ghost btn-xs" id="tg-unlink">إلغاء</button></div>'
+      : `<button class="btn btn-ghost btn-sm" id="tg-link" style="width:100%;border-color:#229ED9;color:#0369a1">✈️ ربط تيليجرام — رسائل مجانية على تيليجرام</button>${S.tgWait ? '<div style="font-size:11px;color:var(--text3);margin-top:4px;text-align:center">⏳ في انتظار ضغط «Start» في تيليجرام…</div>' : ''}`}</div>`;
+  }
+
   // ---------------------------------------------------------------- the list
   async function load() {
     if (!uid()) return;
@@ -119,7 +148,7 @@ const NOTIF = (() => {
     if (!S.open) return '';
     return `<div id="notif-panel" style="position:fixed;top:64px;left:12px;width:min(380px,calc(100vw - 24px));max-height:75vh;overflow:auto;background:var(--bg2);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);z-index:500;padding:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><strong>🔔 الإشعارات</strong><div style="display:flex;gap:6px">${unread() ? '<button class="btn btn-ghost btn-xs" id="notif-readall">تعليم الكل كمقروء</button>' : ''}<button class="btn btn-ghost btn-xs" id="notif-close">✕</button></div></div>
-      <div style="margin-bottom:10px">${pushBox()}</div>
+      <div style="margin-bottom:10px">${pushBox()}${tgBox()}</div>
       ${S.rows.length ? S.rows.map((r) => `<div class="notif-item" data-notif="${r.id}" style="padding:10px;border-radius:10px;margin-bottom:6px;cursor:pointer;background:${r.read_at ? 'transparent' : 'rgba(59,110,245,.07)'};border:1px solid ${r.read_at ? 'var(--border)' : 'rgba(59,110,245,.25)'}">
           <div style="display:flex;justify-content:space-between;gap:8px"><strong style="font-size:13px">${esc(r.title)}</strong><span style="font-size:11px;color:var(--text3);white-space:nowrap">${ago(r.created_at)}</span></div>
           <div style="font-size:12px;color:var(--text2);margin-top:3px;line-height:1.6">${esc(r.body)}</div></div>`).join('')
@@ -128,10 +157,12 @@ const NOTIF = (() => {
   }
   function bind() {
     const b = document.getElementById('notif-bell');
-    if (b) b.onclick = (e) => { e.stopPropagation(); S.open = !S.open; if (S.open) { load().then(render); refreshPushState().then(render); } render(); };
+    if (b) b.onclick = (e) => { e.stopPropagation(); S.open = !S.open; if (S.open) { load().then(render); refreshPushState().then(render); refreshTg().then(render); } render(); };
     document.getElementById('notif-close')?.addEventListener('click', () => { S.open = false; render(); });
     document.getElementById('notif-on')?.addEventListener('click', enablePush);
     document.getElementById('notif-off')?.addEventListener('click', disablePush);
+    document.getElementById('tg-link')?.addEventListener('click', linkTelegram);
+    document.getElementById('tg-unlink')?.addEventListener('click', unlinkTelegram);
     document.getElementById('notif-readall')?.addEventListener('click', async () => { await markRead(null); render(); });
     document.querySelectorAll('.notif-item').forEach((el) => {
       el.onclick = async () => { const id = +el.dataset.notif, r = S.rows.find((x) => x.id === id); await markRead(id); if (r && r.url) openUrl(r.url); else render(); };

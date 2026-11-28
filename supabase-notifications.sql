@@ -88,6 +88,24 @@ create table if not exists public.notif_kpi_snap (
 alter table public.notif_kpi_snap enable row level security;
 revoke all on public.notif_kpi_snap from anon, authenticated;
 
+-- Telegram (free): each user links their Telegram once («✈️ ربط تيليجرام» → Start in the bot)
+alter table public.notifications add column if not exists tg_sent_at timestamptz;
+create table if not exists public.tg_links (                  -- one-time codes, valid 15 minutes
+  code       text primary key,
+  user_id    uuid not null,
+  created_at timestamptz not null default now(),
+  used_at    timestamptz
+);
+create table if not exists public.tg_chats (
+  user_id   uuid primary key,
+  chat_id   bigint not null,
+  tg_name   text,
+  linked_at timestamptz not null default now()
+);
+alter table public.tg_links enable row level security;
+alter table public.tg_chats enable row level security;
+revoke all on public.tg_links, public.tg_chats from anon, authenticated;
+
 -- ---------------------------------------------------------------- helpers (internal)
 create or replace function public._cairo_now() returns timestamp language sql stable as
 $$ select (now() at time zone 'Africa/Cairo') $$;
@@ -308,7 +326,8 @@ begin
     perform public._notif_daily();
   end if;
   if exists (select 1 from public.notifications where push_sent_at is null and send_after <= now())
-     or not exists (select 1 from public.notif_private where k = 'vapid_public') then
+     or not exists (select 1 from public.notif_private where k = 'vapid_public')
+     or exists (select 1 from public.tg_links where used_at is null and created_at > now() - interval '15 minutes') then
     perform net.http_post(
       url     := 'https://hxckdhdwafdxjntuohlw.supabase.co/functions/v1/notify-dispatch',
       headers := jsonb_build_object('Content-Type', 'application/json',
@@ -339,3 +358,38 @@ select cron.schedule('elkareem-notifications', '* * * * *', 'select public.notif
 do $$ begin
   alter publication supabase_realtime add table public.notifications;
 exception when others then null; end $$;
+
+
+-- ════════════════════════════════════════════════════════════════════
+-- 3. Telegram — called by the app
+-- ════════════════════════════════════════════════════════════════════
+-- a one-time code + the bot's username (the app opens t.me/<bot>?start=<code>)
+create or replace function public.tg_link_start(p_site text default null) returns jsonb
+ language plpgsql security definer set search_path to 'public' as $$
+declare v_bot text := (select v from public.notif_private where k = 'tg_bot'); v_code text;
+begin
+  if auth.uid() is null then raise exception 'not_allowed'; end if;
+  if v_bot is null then raise exception 'tg_not_ready'; end if;
+  if p_site ~ '^https://[^ ]{4,200}$' then
+    insert into public.notif_private (k, v) values ('site_url', p_site) on conflict (k) do update set v = excluded.v;
+  end if;
+  delete from public.tg_links where user_id = auth.uid() or created_at < now() - interval '1 day';
+  v_code := substr(replace(gen_random_uuid()::text, '-', ''), 1, 20);
+  insert into public.tg_links (code, user_id) values (v_code, auth.uid());
+  return jsonb_build_object('bot', v_bot, 'code', v_code);
+end $$;
+
+create or replace function public.tg_status() returns jsonb language sql stable security definer set search_path to 'public' as $$
+  select jsonb_build_object('ready', exists (select 1 from public.notif_private where k = 'tg_bot'),
+                            'linked', exists (select 1 from public.tg_chats where user_id = auth.uid())) $$;
+
+create or replace function public.tg_unlink() returns void language sql security definer set search_path to 'public' as
+$$ delete from public.tg_chats where user_id = auth.uid() $$;
+
+do $$ declare fn text; begin
+  for fn in select p.oid::regprocedure::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public' and p.proname in ('tg_link_start', 'tg_status', 'tg_unlink') loop
+    execute format('revoke all on function %s from public, anon', fn);
+    execute format('grant execute on function %s to authenticated', fn);
+  end loop;
+end $$;
