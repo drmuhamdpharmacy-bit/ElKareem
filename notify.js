@@ -163,6 +163,7 @@ const NOTIF = (() => {
     document.getElementById('notif-off')?.addEventListener('click', disablePush);
     document.getElementById('tg-link')?.addEventListener('click', linkTelegram);
     document.getElementById('tg-unlink')?.addEventListener('click', unlinkTelegram);
+    bindCoverage();
     document.getElementById('notif-readall')?.addEventListener('click', async () => { await markRead(null); render(); });
     document.querySelectorAll('.notif-item').forEach((el) => {
       el.onclick = async () => { const id = +el.dataset.notif, r = S.rows.find((x) => x.id === id); await markRead(id); if (r && r.url) openUrl(r.url); else render(); };
@@ -176,5 +177,32 @@ const NOTIF = (() => {
       .then(({error}) => { if (error && !/function .* does not exist|schema cache/i.test(error.message)) console.warn('notify', error.message); });
   }
 
-  return {bell, panel, bind, onLogin, reset, send, openUrl, _S: S};
+  // ---------------------------------------------------------------- who turned notifications on (owner / supervisors)
+  const cov = {};   // branch → rows | 'loading' | 'missing'
+  function loadCoverage(force) {
+    const br = state.branch; if (!br || (!force && cov[br])) return;
+    cov[br] = 'loading';
+    sb.rpc('notif_coverage', {p_branch: br}).then(({data, error}) => { cov[br] = error ? 'missing' : (data || []); render(); });
+  }
+  function coverageCard() {
+    if (!state.user || !['owner', 'senior'].includes(state.user.role)) return '';
+    loadCoverage(false);
+    const rows = cov[state.branch];
+    if (rows === 'missing') return '';
+    const ok = (r) => r.push_devices > 0 || r.telegram;
+    const yes = (t) => `<span class="badge badge-green">✅ ${t}</span>`, no = '<span class="badge badge-gray">—</span>';
+    const body = !Array.isArray(rows) ? '<p style="color:var(--text3);font-size:13px">⏳ جاري التحميل…</p>'
+      : !rows.length ? '<p style="color:var(--text3);font-size:13px">لا يوجد موظفون في هذا الفرع</p>'
+      : `<div class="table-wrap"><table><thead><tr><th>الموظف</th><th>إشعارات الموبايل</th><th>تيليجرام</th><th>الحالة</th></tr></thead><tbody>${[...rows].sort((a, b) => ok(a) - ok(b)).map((r) => `<tr>
+          <td style="font-weight:700">${esc(r.name || r.emp_id)}</td>
+          <td>${r.push_devices > 0 ? yes(r.push_devices > 1 ? r.push_devices + ' أجهزة' : 'مفعّلة') : no}</td>
+          <td>${r.telegram ? yes('مربوط') : no}</td>
+          <td>${!r.has_account ? '<span class="badge badge-red">⚠️ ليس له حساب</span>' : ok(r) ? '<span class="badge badge-green">تصله الإشعارات</span>' : '<span class="badge badge-red">❌ لم يفعّل شيئاً</span>'}</td></tr>`).join('')}</tbody></table></div>`;
+    const n = Array.isArray(rows) ? rows.filter(ok).length : 0, t = Array.isArray(rows) ? rows.length : 0;
+    return `<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>📶 من فعّل الإشعارات؟ ${Array.isArray(rows) && t ? `<span class="badge ${n === t ? 'badge-green' : 'badge-gold'}" style="margin-right:6px">${n} من ${t}</span>` : ''}</h3><button class="btn btn-ghost btn-sm" id="notif-cov-refresh">🔄 تحديث</button></div>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:10px">كل موظف يفعّل بنفسه من حسابه: 🔔 ← «تفعيل الإشعارات على هذا الجهاز» و/أو «✈️ ربط تيليجرام». من لم يفعّل شيئاً يرى الإشعارات فقط عند فتح التطبيق.</p>${body}</div>`;
+  }
+  function bindCoverage() { document.getElementById('notif-cov-refresh')?.addEventListener('click', () => loadCoverage(true)); }
+
+  return {bell, panel, bind, onLogin, reset, send, openUrl, coverageCard, bindCoverage, _S: S};
 })();

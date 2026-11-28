@@ -395,3 +395,26 @@ do $$ declare fn text; begin
     execute format('grant execute on function %s to authenticated', fn);
   end loop;
 end $$;
+
+-- ════════════════════════════════════════════════════════════════════
+-- 4. Who turned notifications on — for the owner and the branch supervisors («الرسائل» page)
+-- ════════════════════════════════════════════════════════════════════
+create or replace function public.notif_coverage(p_branch text)
+ returns table(emp_id text, name text, has_account boolean, push_devices int, telegram boolean)
+ language plpgsql stable security definer set search_path to 'public' as $$
+declare v_role text; v_branch text;
+begin
+  select role, branch into v_role, v_branch from public.profiles where id = auth.uid();
+  if not (v_role = 'owner' or (v_role = 'senior' and v_branch = p_branch)) then raise exception 'not_allowed'; end if;
+  return query
+    select e ->> 'id', e ->> 'name',
+           exists (select 1 from public.profiles p where p.emp_id = e ->> 'id'),
+           (select count(*)::int from public.push_subscriptions s join public.profiles p on p.id = s.user_id where p.emp_id = e ->> 'id'),
+           exists (select 1 from public.tg_chats t join public.profiles p on p.id = t.user_id where p.emp_id = e ->> 'id')
+      from public.app_store st, jsonb_array_elements(st.data) e
+     where st.id = p_branch || '/employees' and jsonb_typeof(st.data) = 'array'
+       and coalesce(e ->> 'leftMk', '') = '' and coalesce(e ->> 'movedTo', '') = ''
+     order by 2;
+end $$;
+revoke all on function public.notif_coverage(text) from public, anon;
+grant execute on function public.notif_coverage(text) to authenticated;
