@@ -458,10 +458,12 @@ function getMonthData(mk=monthKey()){
 // ══ AUTOMATIC ATTENDANCE (from QR check-ins) ══
 let attDays={};   // {'b1|2026':[{emp_id,day,first_in,last_out,minutes,forgot,fixed,open,forgot_in}]}
 let _attMemo={};
-const CFG_DEF={grace:10,shift:8,free_forgets:2,forget_penalty:0.5};
+const LATE_RULE_FROM='2026-11-26'; // lateness deductions start with this pay month (December 2026)
+const CFG_DEF={grace:10,shift:8,free_forgets:2,forget_penalty:0.5,late_mid_max:30,late_free:2,late_mid_pen:0.5,late_big_pen:2};
 function branchCfg(b=state.branch){
   const br=branches.find(x=>x.id===b)||(myView?.emp?.cfg)||{},out={...CFG_DEF};
   Object.keys(CFG_DEF).forEach(k=>{if(br[k]!==undefined&&br[k]!==null&&br[k]!=='')out[k]=+br[k]});
+  out.late_from=/^\d{4}-\d{2}-\d{2}$/.test(br.late_from||'')?br.late_from:LATE_RULE_FROM;
   return out;
 }
 async function loadAttDays(b=state.branch,year=state.year){
@@ -499,11 +501,19 @@ function autoAtt(empId,mk,b=state.branch,emp){
   const rows=attRowsFor(b,mk);if(!rows)return null;
   const mine=rows.filter(r=>r.emp_id===empId);if(!mine.length)return null;
   const e=emp||employees.find(x=>x.id===empId)||{},cfg=branchCfg(b),exc=new Set(excusesOf(empId,mk,b).map(x=>x.date)),free=new Set(lateFreeOf(mk,b).map(x=>x.date));
-  let late=0,lm=0,mins=0,forgot=0,fixed=0,open=0,excused=0;const excDays=new Set(),freeDays=new Set();
-  mine.forEach(r=>{mins+=r.minutes||0;forgot+=r.forgot||0;fixed+=r.fixed||0;open+=r.open||0;const x=lateMinutesFor(r.first_in,e.scheduledTime,cfg.grace);if(x){if(free.has(r.day))freeDays.add(r.day);else if(exc.has(r.day)){excused++;excDays.add(r.day)}else{late++;lm+=x}}});
-  return{days:mine.length,late,lateMin:lm,excused,excDays,freeDays,mins,hrs:Math.round(mins/60*100)/100,forgot,fixed,open,rows:mine.sort((a,b)=>a.day<b.day?-1:1)};
+  let late=0,lm=0,mins=0,forgot=0,fixed=0,open=0,excused=0,mid=0,big=0;const excDays=new Set(),freeDays=new Set(),midDays=[],bigDays=[];
+  mine.forEach(r=>{mins+=r.minutes||0;forgot+=r.forgot||0;fixed+=r.fixed||0;open+=r.open||0;const x=lateMinutesFor(r.first_in,e.scheduledTime,cfg.grace);if(x){if(free.has(r.day))freeDays.add(r.day);else if(exc.has(r.day)){excused++;excDays.add(r.day)}else{late++;lm+=x;if(r.day>=cfg.late_from){if(x>cfg.late_mid_max){big++;bigDays.push(r.day)}else{mid++;midDays.push(r.day)}}}}});
+  return{days:mine.length,late,lateMin:lm,excused,excDays,freeDays,mid,big,midDays,bigDays,mins,hrs:Math.round(mins/60*100)/100,forgot,fixed,open,rows:mine.sort((a,b)=>a.day<b.day?-1:1)};
 }
 // Forgotten check-outs: the first `free_forgets` per month are free, each extra one costs `forget_penalty` of a normal day's pay.
+// Lateness (owner's rule): up to «grace» minutes = allowed. «grace»–late_mid_max minutes = the first
+// late_free times a month are free, then late_mid_pen of a day each. More than late_mid_max minutes =
+// late_big_pen days every time, no allowance. Days with a late permission / a «no lateness» day are skipped.
+function latePenalty(emp,a,cfg,waived){
+  const mid=a?a.mid||0:0,big=a?a.big||0:0,extraMid=Math.max(0,mid-cfg.late_free);
+  const per=Math.round(((+emp.hourRate||0)/26)*cfg.shift*100)/100,days=extraMid*cfg.late_mid_pen+big*cfg.late_big_pen;
+  return{mid,big,extraMid,days,per,amount:waived?0:Math.round(days*per*100)/100,full:Math.round(days*per*100)/100,waived:!!waived};
+}
 function forgotPenalty(emp,a,cfg,waived){
   const count=a?(a.forgot+a.fixed):0,extra=Math.max(0,count-cfg.free_forgets);
   const per=Math.round(((+emp.hourRate||0)/26)*cfg.shift*cfg.forget_penalty*100)/100;
@@ -521,7 +531,8 @@ function getEmpPenalties(empId,mk){
   const p=penalties[mk]||[];let total=0,list=[];
   p.filter(x=>x.empId===empId).forEach(x=>{list.push(x);total+=Number(x.amount)});
   const emp=employees.find(e=>e.id===empId),a=emp&&autoAtt(empId,mk);
-  if(a){const cfg=branchCfg(),fp=forgotPenalty(emp,a,cfg,isWaived(empId,mk));if(fp.amount>0){list.push({name:`عدم تسجيل انصراف (${fp.extra} × ${cfg.forget_penalty} يوم)`,amount:fp.amount,visible:true,auto:true});total+=fp.amount}}
+  if(a){const cfg=branchCfg(),fp=forgotPenalty(emp,a,cfg,isWaived(empId,mk));if(fp.amount>0){list.push({name:`عدم تسجيل انصراف (${fp.extra} × ${cfg.forget_penalty} يوم)`,amount:fp.amount,visible:true,auto:true});total+=fp.amount}
+    const lp=latePenalty(emp,a,cfg,isWaived(empId,mk));if(lp.amount>0){list.push({name:`تأخير (${[lp.extraMid?`${lp.extraMid} × ${cfg.late_mid_pen} يوم`:'',lp.big?`${lp.big} × ${cfg.late_big_pen} يوم`:''].filter(Boolean).join(' + ')})`,amount:lp.amount,visible:true,auto:true});total+=lp.amount}}
   return{list,total}
 }
 // Withdrawals (المسحوبات): purchases on the employee's account — deducted in full from the same month.
@@ -711,8 +722,8 @@ function allMonthKeys(){
 function empMonthStats(emp,mk){
   const md=getMonthData(mk),commData=calcCommission(md.sales||0,mk),hrs=(md.hours||{})[emp.id]||0,sal=calcSalary(emp,hrs);
   const comm=emp.commPct>0?commData.pool*(emp.commPct/100):0,{total:bt}=getEmpBonuses(emp.id,mk),{total:pt}=getEmpPenalties(emp.id,mk);
-  const a=autoAtt(emp.id,mk),fp=forgotPenalty(emp,a,branchCfg(),isWaived(emp.id,mk)),w=getEmpWithdrawals(emp.id,mk),wd=w.total;
-  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount,ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,salesPct:salesShare(md,emp.id),commOff:!!commData.off,lateExcused:excusesOf(emp.id,mk).map(x=>({date:x.date,note:x.note||''})),lateFree:lateFreeOf(mk).map(x=>({date:x.date,note:x.note||''})),badges:empBadges(emp.id,mk).map(x=>{const b=badgeOf(x);return{k:b.k,icon:b.icon,name:b.name,desc:b.desc,note:x.note||''}}),commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
+  const a=autoAtt(emp.id,mk),fp=forgotPenalty(emp,a,branchCfg(),isWaived(emp.id,mk)),lp=latePenalty(emp,a,branchCfg(),isWaived(emp.id,mk)),w=getEmpWithdrawals(emp.id,mk),wd=w.total;
+  return{hrs,sal,comm,bt,pt,wd,wdList:w.list.map(x=>({date:x.date,type:x.type,amount:+x.amount,note:x.note||''})),ptManual:pt-fp.amount-lp.amount,forgotWaived:isWaived(emp.id,mk),ptDays:dayPen(emp.id,mk).days,ptDayAmt:dayPen(emp.id,mk).amt,net:sal+comm+bt-pt-wd,kpi:getKPI(emp.id,mk),att:getAttData(emp.id,mk),empSales:(md.empSales||{})[emp.id]||0,salesPct:salesShare(md,emp.id),commOff:!!commData.off,lateExcused:excusesOf(emp.id,mk).map(x=>({date:x.date,note:x.note||''})),lateFree:lateFreeOf(mk).map(x=>({date:x.date,note:x.note||''})),badges:empBadges(emp.id,mk).map(x=>{const b=badgeOf(x);return{k:b.k,icon:b.icon,name:b.name,desc:b.desc,note:x.note||''}}),commRate:commData.rate,auto:!!a,forgotPen:fp,forgotWaived:fp.waived};
 }
 // employee's share of the branch's total sales for the month (0 when the employee has no sales entered)
 function salesShare(md,empId){const es=(md.empSales||{})[empId]||0,tot=(md.sales||0)||Object.values(md.empSales||{}).reduce((t,v)=>t+(+v||0),0);return es>0&&tot>0?Math.round(es/tot*1000)/10:0}
@@ -749,8 +760,8 @@ function empStats(empId,mk){
   const s=myView?.months?.[mk]||{hrs:0,sal:0,comm:0,bt:fb,pt:0,wd:0,wdList:[],ptManual:0,net:fb,kpi:0,att:{onTime:0,late:0,total:0,lateHours:0,lateMinutes:0},empSales:0,commRate:0};
   // Live: hours/attendance straight from this employee's own check-ins
   const e=myView?.emp,a=e&&autoAtt(e.id,mk,state.branch,e);if(!a)return s;
-  const fp=forgotPenalty(e,a,branchCfg(),!!s.forgotWaived),hrs=a.hrs,sal=((+e.hourRate||0)/26)*hrs,pt=(s.ptManual??s.pt??0)+fp.amount;
-  return{...s,hrs,sal,pt,net:sal+(s.comm||0)+(s.bt||0)-pt-(s.wd||0),auto:true,forgotPen:fp,
+  const fp=forgotPenalty(e,a,branchCfg(),!!s.forgotWaived),lp=latePenalty(e,a,branchCfg(),!!s.forgotWaived),hrs=a.hrs,sal=((+e.hourRate||0)/26)*hrs,pt=(s.ptManual??s.pt??0)+fp.amount+lp.amount;
+  return{...s,hrs,sal,pt,net:sal+(s.comm||0)+(s.bt||0)-pt-(s.wd||0),auto:true,forgotPen:fp,latePen:lp,
     att:{total:a.days,onTime:a.days-a.late,late:a.late,lateHours:Math.floor(a.lateMin/60),lateMinutes:a.lateMin%60,auto:true,forgot:a.forgot+a.fixed,open:a.open}};
 }
 function empMissions(empId,mk){if(isStaff())return(missions[mk]||[]).filter(m=>m.empId===empId);const own=(myView?.missions||{})[mk]||[];return _inOtherView?own:own.concat(...Object.values(myOtherViews||{}).map(v=>(v.missions||{})[mk]||[]))}
@@ -1710,6 +1721,7 @@ function renderMyCheckin(){
   let list=loaded?'<p style="color:var(--text3)">لا توجد تسجيلات هذا الشهر</p>':loadingHTML,summary='';
   if(withAtt.length){
     summary=withAtt.map(({a,me,cfg,name})=>{const fp=forgotPenalty(me,a,cfg,false);return(multi?`<div style="font-weight:800;margin:10px 0 6px">🏢 ${esc(name)}</div>`:'')+`<div class="stats-row"><div class="stats-row-item"><div class="val">${a.days}</div><div class="lbl">أيام الحضور</div></div><div class="stats-row-item"><div class="val" style="color:var(--brand)">${fmtNum(a.hrs,1)}</div><div class="lbl">ساعات العمل</div></div><div class="stats-row-item"><div class="val" style="color:${a.late?'var(--warn)':'var(--success)'}">${a.late}</div><div class="lbl">أيام التأخير (${fmtMins(a.lateMin)})</div></div><div class="stats-row-item"><div class="val" style="color:${fp.extra?'var(--danger)':fp.count?'var(--warn)':'var(--success)'}">${fp.count}</div><div class="lbl">نسيان الانصراف (المسموح ${cfg.free_forgets})</div></div></div>
+      ${(lp=>lp.days?`<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--danger)">⚠️ خصم تأخير هذا الشهر: ${fmtNum(lp.days,1)} يوم (${fmtNum(lp.amount,2)} ج.م)${lp.extraMid?` — ${lp.extraMid} مرة تأخير ${cfg.grace+1}–${cfg.late_mid_max} دقيقة بعد المسموح (${cfg.late_free})`:''}${lp.big?` — ${lp.big} مرة أكثر من ${cfg.late_mid_max} دقيقة (${cfg.late_big_pen} يوم كل مرة)`:''}</div>`:a.mid?`<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--gold2)">تنبيه: تأخرت ${a.mid} مرة هذا الشهر (المسموح ${cfg.late_free} مرات بدون خصم). التأخير أكثر من ${cfg.late_mid_max} دقيقة يُخصم ${cfg.late_big_pen} يوم فوراً.</div>`:'')(latePenalty(me,a,cfg,false))}
       ${fp.extra?`<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--danger)">⚠️ تجاوزت ${cfg.free_forgets} مرات نسيان هذا الشهر — جزاء ${fmtNum(fp.per,2)} ج.م عن كل مرة إضافية (${fp.extra})</div>`:fp.count?`<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--gold2)">تنبيه: نسيت تسجيل الانصراف ${fp.count} مرة هذا الشهر. المسموح ${cfg.free_forgets} مرات بدون جزاء.</div>`:''}`}).join('');
     const allRows=withAtt.flatMap(x=>x.a.rows.map(r=>({...r,_bn:x.name,_cfg:x.cfg,_exc:x.a.excDays.has(r.day),_free:x.a.freeDays.has(r.day)}))).sort((x,y)=>x.day===y.day?(x.first_in<y.first_in?1:-1):(x.day<y.day?1:-1));
     list=`<div class="table-wrap"><table><thead><tr><th>اليوم</th>${multi?'<th>الفرع</th>':''}<th>حضور</th><th>انصراف</th><th>المدة</th></tr></thead><tbody>${allRows.map(r=>`<tr><td>${fmtDay(r.day)}</td>${multi?`<td style="font-size:12px;font-weight:700">${esc(r._bn)}</td>`:''}<td dir="ltr">${r.first_in?fmtTime(r.first_in):'—'}</td><td dir="ltr">${r.last_out?fmtTime(r.last_out):'—'}</td><td>${r.minutes?fmtMins(r.minutes):'—'}</td></tr>${r._free?`<tr class="day-flags"><td colspan="${multi?5:4}"><span class="badge badge-green">🕊️ يوم بدون تأخير لكل الفرع — لا يُحسب تأخيراً</span></td></tr>`:r._exc?`<tr class="day-flags"><td colspan="${multi?5:4}"><span class="badge badge-blue">⏰ تأخير بإذن — لا يُحسب تأخيراً</span></td></tr>`:''}${(r.open||r.forgot||r.fixed)?`<tr class="day-flags"><td colspan="${multi?5:4}">${r.open?'<span class="badge badge-green">🟢 حاضر الآن</span>':''}${r.forgot?(pendingIn.has(String(r.forgot_in))?'<span class="badge badge-gold">⏳ طلب التعديل في الانتظار</span>':`<span class="badge badge-red">نسيت الانصراف — احتُسبت ${r._cfg.shift} ساعات</span> <button class="btn btn-ghost btn-xs" data-fix-in="${r.forgot_in}" data-fix-day="${esc(r.first_in)}">📝 أدخل وقت خروجي</button>`):''}${r.fixed?'<span class="badge badge-blue">✔️ تم تعديل الانصراف</span>':''}</td></tr>`:''}`).join('')}</tbody></table></div>`;
@@ -1735,7 +1747,7 @@ function checkinsCard(){
   const rows=employees.map(e=>({e,a:autoAtt(e.id,mk)})).filter(x=>x.a);
   const src={qr:'📱 كود',request:'📝 طلب',manual:'✍️ يدوي'};
   const body=!loaded?loadingHTML:!rows.length?`<p style="color:var(--text3)">لا توجد تسجيلات بالكود لهذا الشهر. افتح «📺 شاشة الحضور» على جهاز في الفرع ليبدأ الموظفون التسجيل.</p>`:
-    `<div class="table-wrap"><table><thead><tr><th>الموظف</th><th>أيام</th><th>ساعات العمل</th><th>أيام التأخير</th><th>مجموع التأخير</th><th>نسيان الانصراف</th><th>الجزاء</th><th>إلغاء الجزاء</th><th>الآن</th></tr></thead><tbody>${rows.map(({e,a})=>{const fp=forgotPenalty(e,a,cfg,isWaived(e.id,mk));return`<tr><td style="font-weight:700">${esc(e.name)}</td><td>${a.days}</td><td style="font-weight:800;color:var(--brand)">${fmtNum(a.hrs,2)}</td><td style="color:${a.late?'var(--warn)':'var(--success)'}">${a.late}${a.excused?` <span style="font-size:11px;color:var(--text2)">(+${a.excused} بإذن)</span>`:''}</td><td>${fmtMins(a.lateMin)}</td><td style="color:${fp.extra?'var(--danger)':fp.count?'var(--warn)':'var(--text2)'}">${fp.count} / ${cfg.free_forgets}</td><td style="color:var(--danger)">${fp.extra?(fp.waived?'<s>'+fmtNum(fp.extra*fp.per,2)+'</s>':fmtNum(fp.amount,2)+' ج.م'):'—'}</td><td>${fp.extra?`<label class="toggle-switch"><input type="checkbox" class="forgot-waive" data-id="${esc(e.id)}" ${fp.waived?'checked':''}><span class="toggle-slider"></span></label>`:''}</td><td>${a.open?'<span class="badge badge-green">🟢 حاضر</span>':''}</td></tr>`}).join('')}</tbody></table></div>
+    `<div class="table-wrap"><table><thead><tr><th>الموظف</th><th>أيام</th><th>ساعات العمل</th><th>أيام التأخير</th><th>مجموع التأخير</th><th>خصم التأخير</th><th>نسيان الانصراف</th><th>جزاء النسيان</th><th>إلغاء الخصومات</th><th>الآن</th></tr></thead><tbody>${rows.map(({e,a})=>{const fp=forgotPenalty(e,a,cfg,isWaived(e.id,mk)),lp=latePenalty(e,a,cfg,isWaived(e.id,mk));return`<tr><td style="font-weight:700">${esc(e.name)}</td><td>${a.days}</td><td style="font-weight:800;color:var(--brand)">${fmtNum(a.hrs,2)}</td><td style="color:${a.late?'var(--warn)':'var(--success)'}">${a.late}${a.excused?` <span style="font-size:11px;color:var(--text2)">(+${a.excused} بإذن)</span>`:''}</td><td>${fmtMins(a.lateMin)}</td><td style="color:var(--danger);font-size:12px" title="${a.mid} مرة ${cfg.grace+1}–${cfg.late_mid_max} دقيقة (المسموح ${cfg.late_free}) · ${a.big} مرة أكثر من ${cfg.late_mid_max} دقيقة">${lp.days?(lp.waived?'<s>'+fmtNum(lp.full,2)+'</s>':fmtNum(lp.amount,2)+' ج.م')+`<div style="color:var(--text3)">${fmtNum(lp.days,1)} يوم</div>`:a.mid?`<span style="color:var(--warn)">${a.mid} / ${cfg.late_free} مسموح</span>`:'—'}</td><td style="color:${fp.extra?'var(--danger)':fp.count?'var(--warn)':'var(--text2)'}">${fp.count} / ${cfg.free_forgets}</td><td style="color:var(--danger)">${fp.extra?(fp.waived?'<s>'+fmtNum(fp.extra*fp.per,2)+'</s>':fmtNum(fp.amount,2)+' ج.م'):'—'}</td><td>${fp.extra||lp.days?`<label class="toggle-switch"><input type="checkbox" class="forgot-waive" data-id="${esc(e.id)}" ${fp.waived?'checked':''}><span class="toggle-slider"></span></label>`:''}</td><td>${a.open?'<span class="badge badge-green">🟢 حاضر</span>':''}</td></tr>`}).join('')}</tbody></table></div>
     ${raw?`<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--accent);font-weight:700;font-size:13px">عرض كل التسجيلات (${raw.length})</summary>
       <div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>اليوم</th><th>الوقت</th><th>الموظف</th><th>النوع</th><th>المصدر</th><th>المسافة</th>${isOwner()?'<th></th>':''}</tr></thead><tbody>${[...raw].reverse().map(r=>`<tr><td>${fmtDay(cairo(r.at).date)}</td><td dir="ltr">${fmtTime(r.at)}</td><td>${esc(r.emp_name||r.emp_id)}</td><td>${r.kind==='in'?'🟢 حضور':'🔴 انصراف'}</td><td style="font-size:12px">${src[r.source]||'📱 كود'}${r.note?` — ${esc(r.note)}`:''}</td><td>${r.dist_m!=null?fmtNum(r.dist_m)+' م':'—'}</td>${isOwner()?`<td><button class="btn btn-danger btn-xs" data-del-checkin="${r.id}">🗑</button></td>`:''}</tr>`).join('')}</tbody></table></div></details>`:''}`;
   return`<div class="card" style="margin-bottom:16px"><div class="section-header"><h3>⏱️ الحضور والساعات التلقائية — ${MONTHS_AR[state.month]} ${state.year}${payRangeHTML()}</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" id="refresh-checkins-btn">🔄 تحديث</button><button class="btn btn-primary btn-sm" id="add-checkin-btn">➕ إضافة تسجيل يدوي</button>${isOwner()?'<button class="btn btn-gold btn-sm" id="add-latefree-btn">🕊️ إلغاء التأخير ليوم للفرع كله</button>':''}</div></div>${lateFreeListHTML(mk)}
@@ -1922,6 +1934,16 @@ function renderBranchesCard(){
       <td><input type="number" class="br-free" data-id="${esc(b.id)}" value="${b.free_forgets??2}" min="0" style="width:70px"></td>
       <td><input type="number" class="br-pen" data-id="${esc(b.id)}" value="${b.forget_penalty??0.5}" min="0" step="0.25" style="width:70px"></td>
       <td>${users.some(u=>u.role==='kiosk'&&u.branch===b.id)?'<span class="badge badge-green">✅ موجود</span>':`<button class="btn btn-gold btn-xs" data-kiosk-acc="${esc(b.id)}">📺 إنشاء حساب الشاشة</button>`}${branches.length>1?`<div style="margin-top:6px"><button class="btn btn-ghost btn-xs" style="color:var(--danger)" data-br-del="${esc(b.id)}" title="حذف فرع أُضيف بالخطأ (فارغ فقط)">🗑 حذف الفرع</button></div>`:''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <h4 style="margin:18px 0 6px">⏰ خصم التأخير</h4>
+    <p style="color:var(--text2);font-size:12px;margin-bottom:8px">حتى «سماح التأخير» = مسموح بدون خصم. من بعده حتى «حد التأخير المتوسط» = أول «مرات مسموحة» في الشهر بدون خصم، ثم يُخصم «خصم المتوسط» عن كل مرة. أكثر من الحد = يُخصم «خصم التأخير الكبير» فوراً بدون سماح. يوم عليه إذن تأخير لا يُحسب. اليوم = سعر الساعة ÷ 26 × ساعات الوردية.</p>
+    <div class="table-wrap"><table><thead><tr><th>الفرع</th><th>مسموح حتى (دقيقة)</th><th>حد التأخير المتوسط (دقيقة)</th><th>مرات مسموحة/شهر</th><th>خصم المتوسط (يوم)</th><th>خصم التأخير الكبير (يوم)</th><th>يبدأ الخصم من</th></tr></thead><tbody>
+    ${branches.map(b=>{const c={...CFG_DEF,...Object.fromEntries(Object.entries(b).filter(([,v])=>v!==undefined&&v!==null&&v!==''))};return`<tr><td style="font-weight:700">${esc(b.name)}</td><td style="color:var(--text2)">${c.grace} <span style="font-size:11px">(من «سماح التأخير»)</span></td>
+      <td><input type="number" class="br-lmax" data-id="${esc(b.id)}" value="${c.late_mid_max}" min="1" style="width:80px"></td>
+      <td><input type="number" class="br-lfree" data-id="${esc(b.id)}" value="${c.late_free}" min="0" style="width:70px"></td>
+      <td><input type="number" class="br-lpen" data-id="${esc(b.id)}" value="${c.late_mid_pen}" min="0" step="0.25" style="width:70px"></td>
+      <td><input type="number" class="br-lbig" data-id="${esc(b.id)}" value="${c.late_big_pen}" min="0" step="0.25" style="width:70px"></td>
+      <td><input type="date" class="br-lfrom" data-id="${esc(b.id)}" value="${esc(b.late_from||LATE_RULE_FROM)}" style="width:150px"></td></tr>`}).join('')}
     </tbody></table></div></div>`;
 }
 function collectBranchInputs(){
@@ -1931,6 +1953,9 @@ function collectBranchInputs(){
   document.querySelectorAll('.br-grace').forEach(i=>{const b=branches.find(x=>x.id===i.dataset.id);if(b)b.grace=Math.max(0,+i.value||0)});
   document.querySelectorAll('.br-shift').forEach(i=>{const b=branches.find(x=>x.id===i.dataset.id);if(b)b.shift=Math.min(16,Math.max(1,+i.value||8))});
   document.querySelectorAll('.br-free').forEach(i=>{const b=branches.find(x=>x.id===i.dataset.id);if(b)b.free_forgets=Math.max(0,Math.round(+i.value||0))});
+  const num=(sel,fn)=>document.querySelectorAll(sel).forEach(i=>{const b=branches.find(x=>x.id===i.dataset.id);if(b)fn(b,+i.value)});
+  num('.br-lmax',(b,v)=>{b.late_mid_max=Math.max(1,Math.round(v||30))});num('.br-lfree',(b,v)=>{b.late_free=Math.max(0,Math.round(v||0))});
+  num('.br-lpen',(b,v)=>{b.late_mid_pen=Math.max(0,v||0)});document.querySelectorAll('.br-lfrom').forEach(i=>{const b=branches.find(x=>x.id===i.dataset.id);if(b&&/^\d{4}-\d{2}-\d{2}$/.test(i.value))b.late_from=i.value});num('.br-lbig',(b,v)=>{b.late_big_pen=Math.max(0,v||0)});
   document.querySelectorAll('.br-pen').forEach(i=>{const b=branches.find(x=>x.id===i.dataset.id);if(b)b.forget_penalty=Math.max(0,+i.value||0)});
 }
 function renderBackupCard(){
